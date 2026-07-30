@@ -62,6 +62,37 @@ const UPSERT = `INSERT INTO file_change (
   RETURNING ${COLUMNS}`;
 
 /**
+ * As above, but a null incoming patch leaves whatever is stored alone.
+ *
+ * For a sync that deliberately did not ask for hunks. Overwriting a stored hunk
+ * with NULL erases material the user already paid to fetch, and — because the
+ * driver reports `patchTruncated: false` when patches were never requested —
+ * records that nothing was withheld, so the renderer then says "no diff hunk
+ * recorded" about a file that has a real diff upstream.
+ */
+const UPSERT_KEEPING_PATCHES = `INSERT INTO file_change (
+    thread_id, path, previous_path, status, additions, deletions, patch, patch_truncated
+  )
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  ON CONFLICT (thread_id, path) DO UPDATE SET
+    previous_path = excluded.previous_path,
+    status = excluded.status,
+    additions = excluded.additions,
+    deletions = excluded.deletions,
+    patch = COALESCE(excluded.patch, file_change.patch),
+    patch_truncated = CASE
+      WHEN excluded.patch IS NULL AND file_change.patch IS NOT NULL
+        THEN file_change.patch_truncated
+      ELSE excluded.patch_truncated
+    END
+  RETURNING ${COLUMNS}`;
+
+export interface ReplaceFileChangesOptions {
+  /** Keep an already-stored hunk when the incoming file carries none. */
+  preserveStoredPatches?: boolean;
+}
+
+/**
  * Replace a thread's file list wholesale.
  *
  * Unlike an event, a file change is not an immutable record of something that
@@ -76,9 +107,12 @@ export function replaceFileChanges(
   db: Db,
   threadId: number,
   files: readonly FileChange[],
+  options: ReplaceFileChangesOptions = {},
 ): FileChangeRow[] {
   return transaction(db, () => {
-    const upsert = db.prepare(UPSERT);
+    const upsert = db.prepare(
+      options.preserveStoredPatches ? UPSERT_KEEPING_PATCHES : UPSERT,
+    );
     const rows = files.map((file) => {
       const row = upsert.get(
         threadId,
@@ -93,13 +127,18 @@ export function replaceFileChanges(
       return toFileChange(row!);
     });
 
-    const keep = rows.map((row) => row.path);
-    const placeholders = keep.map(() => '?').join(', ');
-    db.prepare(
-      keep.length === 0
-        ? 'DELETE FROM file_change WHERE thread_id = ?'
-        : `DELETE FROM file_change WHERE thread_id = ? AND path NOT IN (${placeholders})`,
-    ).run(threadId, ...keep);
+    // The doomed rows are selected in JS rather than with `path NOT IN (…)`: a
+    // change touching more files than SQLite's bound-parameter ceiling would
+    // otherwise fail the statement and take the whole thread's sync with it.
+    const keep = new Set(rows.map((row) => row.path));
+    const doomed = db
+      .prepare('SELECT id, path FROM file_change WHERE thread_id = ?')
+      .all(threadId)
+      .filter((row) => !keep.has(text(row, 'path')))
+      .map((row) => int(row, 'id'));
+
+    const remove = db.prepare('DELETE FROM file_change WHERE id = ?');
+    for (const id of doomed) remove.run(id);
 
     return rows;
   });

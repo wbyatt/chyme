@@ -101,6 +101,16 @@ export function listDigests(db: Db, projectId: number, limit = 20): DigestMetaRo
     }));
 }
 
+/**
+ * How many the project has, which is not the same as how many `listDigests`
+ * returned. A listing that shows a page has to say so, and it cannot say so
+ * from the page.
+ */
+export function countDigests(db: Db, projectId: number): number {
+  const row = db.prepare('SELECT count(*) AS n FROM digest WHERE project_id = ?').get(projectId);
+  return row ? int(row, 'n') : 0;
+}
+
 export function deleteDigest(db: Db, id: number): boolean {
   return db.prepare('DELETE FROM digest WHERE id = ?').run(id).changes > 0;
 }

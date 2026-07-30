@@ -42,6 +42,46 @@ function render(
   });
 }
 
+/**
+ * Two sources interleaved by recency: one busy repository and one thread in
+ * another that is the second most recent of the lot. Grouping by source and
+ * writing group by group would drop the second source entirely while showing
+ * older threads from the first.
+ */
+function seedTwoSources(): void {
+  fixture.addThread({
+    number: 10,
+    title: 'Thread number 10',
+    createdAt: '2026-07-19T00:00:00Z',
+    author: ADA,
+    body: 'A description long enough that the one-line summary has something to say about it.',
+    events: [{ at: '2026-07-26T01:00:00Z', by: KAI }],
+  });
+  for (let index = 1; index <= 9; index += 1) {
+    fixture.addThread({
+      number: index,
+      title: `Thread number ${index}`,
+      createdAt: '2026-07-19T00:00:00Z',
+      author: ADA,
+      body: 'A description long enough that the one-line summary has something to say about it.',
+      events: [{ at: `2026-07-20T0${index}:00:00Z`, by: KAI }],
+    });
+  }
+  fixture.addThread({
+    number: 99,
+    source: 'acme/worker',
+    title: 'Worker retries',
+    createdAt: '2026-07-19T00:00:00Z',
+    author: ADA,
+    body: 'A description long enough that the one-line summary has something to say about it.',
+    events: [{ at: '2026-07-25T23:00:00Z', by: KAI }],
+  });
+}
+
+function shownRefs(text: string): string[] {
+  return [...text.matchAll(/(platform\/\S+#\d+) \[/g)].map((match) => match[1]!);
+}
+
 function seedThreads(count: number): void {
   for (let index = 1; index <= count; index += 1) {
     fixture.addThread({
@@ -123,6 +163,63 @@ describe('renderActivity', () => {
       const shown = [...text.matchAll(/platform\/acme\/api#\d+ \[/g)].length;
       if (shown < 4) expect(text).toMatch(/threads not shown/);
     }
+  });
+
+  it('drops the least recent threads, not the last source in the layout', () => {
+    seedTwoSources();
+    const result = queryActivity(fixture.store, fixture.project, WINDOW, {});
+    const text = renderActivity(result, { now: NOW, maxBytes: 900 });
+
+    const shown = shownRefs(text);
+    expect(shown.length).toBeGreaterThan(1);
+    expect(shown.length).toBeLessThan(result.threads.length);
+    // Exactly the most recent N, whatever order the source grouping puts them
+    // in — so "least recent first" describes what actually happened.
+    expect([...shown].sort()).toEqual(
+      result.threads
+        .slice(0, shown.length)
+        .map((activity) => activity.ref)
+        .sort(),
+    );
+    expect(text).toContain('## acme/worker');
+    expect(text).toContain('platform/acme/worker#99');
+  });
+
+  it('never lets a group heading claim more threads than it lists', () => {
+    seedTwoSources();
+    for (const maxBytes of [400, 700, 900, 1400, 2000, 4000, 8000]) {
+      const text = render({ maxBytes });
+      const sections = text.split(/^## /m).slice(1);
+
+      for (const section of sections) {
+        const heading = /^(\S+) — (?:(\d+) of )?(\d+) threads?/.exec(section);
+        expect(heading, `budget ${maxBytes}: ${section.split('\n')[0]}`).not.toBeNull();
+        const claimed = Number(heading![2] ?? heading![3]);
+        expect(claimed, `budget ${maxBytes}: ${heading![0]}`).toBe(shownRefs(section).length);
+      }
+    }
+  });
+
+  it('names a source whose threads all fell to the budget', () => {
+    seedTwoSources();
+    const text = render({ maxBytes: 900 });
+
+    // The worker thread outranks eight of the ten in acme/api, so at this
+    // budget it is listed. Squeeze harder and the oldest source goes first.
+    expect(text).toContain('## acme/worker');
+
+    fixture.addThread({
+      number: 1,
+      source: 'acme/worker',
+      title: 'Quiet worker change',
+      createdAt: '2026-07-19T00:00:00Z',
+      author: ADA,
+      events: [{ at: '2026-07-20T00:30:00Z', by: KAI }],
+    });
+    const tight = render({ maxBytes: 700 });
+
+    expect(shownRefs(tight).some((ref) => ref.includes('worker'))).toBe(false);
+    expect(tight).toContain('[sources not listed: acme/worker (2 threads)]');
   });
 
   it('reports the threads its defaults kept out', () => {

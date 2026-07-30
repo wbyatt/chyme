@@ -12,18 +12,22 @@ function source(overrides: Partial<SourceSyncReport> = {}): SourceSyncReport {
     eventsWritten: 40,
     filesWritten: 12,
     hitRunLimit: false,
+    firstSyncFrom: null,
+    failedThreads: [],
     error: null,
     ...overrides,
   };
 }
 
-function report(sources: SourceSyncReport[]): SyncReport {
+function report(sources: SourceSyncReport[], overrides: Partial<SyncReport> = {}): SyncReport {
   return {
     projectSlug: 'platform',
     startedAt: '2026-07-27T09:00:00Z',
     finishedAt: '2026-07-27T09:02:10Z',
     sources,
     removedSources: [],
+    aborted: false,
+    ...overrides,
   };
 }
 
@@ -49,7 +53,7 @@ describe('renderSyncReport', () => {
 
   it('says when the run limit stopped it short', () => {
     const text = renderSyncReport(report([source({ hitRunLimit: true })]));
-    expect(text).toContain('stopped at the per-run thread limit; run sync again to continue');
+    expect(text).toContain('Stopped at the per-run thread limit; run sync again to continue.');
   });
 
   it('lists sources the config dropped', () => {

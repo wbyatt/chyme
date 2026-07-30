@@ -82,6 +82,11 @@ export interface ThreadFile extends FileChangeSummary {
   patch: string | null;
 }
 
+/**
+ * The thread as it stands, never the view of it. Every count here is over the
+ * whole thread — what the options withheld is named in `omittedEvents` — so a
+ * filtered read cannot be mistaken for a smaller thread.
+ */
 export interface ThreadTotals {
   events: number;
   files: number;
@@ -169,9 +174,14 @@ export function queryThread(
       return { reference, from, fromEvent, fromActor };
     });
 
+  // Over every event, not the ones the options kept — the same basis as the
+  // event total beside it. Counting participants from the filtered stream made
+  // `--no-comments` print "6 events · 1 participant" for a thread two people
+  // argued in, which reads as a fact about the thread rather than about the
+  // view of it.
   const participants = new Set<number>();
   if (thread.authorId !== null) participants.add(thread.authorId);
-  for (const { event } of events) {
+  for (const event of all) {
     if (event.actorId !== null) participants.add(event.actorId);
   }
 

@@ -36,6 +36,36 @@ describe('parseTimeSpec', () => {
     expect(() => parseTimeSpec('', NOW)).toThrow(ChymeError);
     expect(() => parseTimeSpec('0d', NOW)).toThrow(/zero-length/);
   });
+
+  it('refuses an uppercase unit rather than reading 6M as six minutes', () => {
+    expect(() => parseTimeSpec('6M', NOW)).toThrow(/not a time unit/);
+    expect(() => parseTimeSpec('7D', NOW)).toThrow(/not a time unit/);
+
+    let hint: string | undefined;
+    try {
+      parseTimeSpec('6M', NOW);
+    } catch (error) {
+      hint = (error as ChymeError).hint;
+    }
+    expect(hint).toMatch(/no month or year unit/);
+  });
+
+  it('refuses an offset too large for a Date instead of throwing a RangeError', () => {
+    expect(() => parseTimeSpec('999999999d', NOW)).toThrow(ChymeError);
+    expect(() => parseTimeSpec('999999999d', NOW)).toThrow(/further back/);
+  });
+
+  it('reads a zoneless timestamp as UTC, like a bare date', () => {
+    // Otherwise the same command means different instants on different machines.
+    expect(parseTimeSpec('2026-07-01T09:30:00', NOW)).toEqual({
+      kind: 'instant',
+      at: '2026-07-01T09:30:00Z',
+    });
+    expect(parseTimeSpec('2026-07-01 09:30', NOW)).toEqual({
+      kind: 'instant',
+      at: '2026-07-01T09:30:00Z',
+    });
+  });
 });
 
 describe('toIso', () => {

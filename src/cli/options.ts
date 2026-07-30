@@ -56,3 +56,37 @@ export function parseSince(value: string, now: Date): TimeSpec {
 export function parseUntil(value: string | undefined, now: Date): TimeSpec | undefined {
   return value === undefined ? undefined : parseTimeSpec(value, now);
 }
+
+/** The two ends of a window are written `<since>..<until>`. */
+const WINDOW_SEPARATOR = '..';
+
+export interface WindowArgument {
+  since: TimeSpec;
+  until: TimeSpec;
+}
+
+/**
+ * A whole window in one argument, exactly as `chyme activity` reports the
+ * window it read.
+ *
+ * It exists so a window can be handed back rather than described again: an
+ * `--until` that defaults to "now" is re-resolved at the moment of the second
+ * command, and the minutes in between belong to no window at all.
+ */
+export function parseWindowArgument(value: string, now: Date): WindowArgument {
+  const at = value.indexOf(WINDOW_SEPARATOR);
+  const since = at === -1 ? '' : value.slice(0, at).trim();
+  const until = at === -1 ? '' : value.slice(at + WINDOW_SEPARATOR.length).trim();
+  if (since === '' || until === '') {
+    throw new ChymeError(
+      `--window must be <since>${WINDOW_SEPARATOR}<until>, got "${value}".`,
+      '`chyme activity` prints the window it read in exactly that form.',
+    );
+  }
+  return { since: parseTimeSpec(since, now), until: parseTimeSpec(until, now) };
+}
+
+/** How `activity` reports a window it resolved, and what `--window` accepts. */
+export function formatWindowArgument(since: string, until: string): string {
+  return `${since}${WINDOW_SEPARATOR}${until}`;
+}

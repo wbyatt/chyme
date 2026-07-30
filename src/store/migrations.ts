@@ -182,8 +182,8 @@ CREATE VIRTUAL TABLE search_index USING fts5(
 -- The index must not outlive what it points at, or a search returns hits for
 -- threads that are gone. The trigger lives in this migration rather than the
 -- core one so that swapping the search implementation takes its cleanup with
--- it. Requires PRAGMA recursive_triggers, which db.ts sets, for the case where
--- the thread is itself being deleted by a cascade.
+-- it. This fires for a thread deleted directly and for one deleted by a
+-- foreign-key cascade from its source or project; both were verified.
 CREATE TRIGGER search_index_thread_delete AFTER DELETE ON thread BEGIN
   DELETE FROM search_index WHERE thread_id = old.id;
 END;

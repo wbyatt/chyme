@@ -59,7 +59,18 @@ export interface SourceDriver {
     opts: ListThreadsOptions,
   ): AsyncIterable<ThreadSummary>;
 
-  /** Everything said and done inside one thread. */
+  /**
+   * Everything said and done inside one thread.
+   *
+   * The event list must be *complete*, not a page of it: sync treats an event
+   * absent from the result as one that was deleted at the source and removes it,
+   * so returning a partial list would delete real history. Paginate internally
+   * until the thread is exhausted.
+   *
+   * `files` is an optional facet. A source with no notion of changed files —
+   * a ticket tracker, a chat thread, a document — returns an empty array, and
+   * every layer above handles that as ordinary.
+   */
   fetchThreadDetail(
     source: SourceRef,
     ref: ThreadRef,

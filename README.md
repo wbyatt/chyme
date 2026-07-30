@@ -75,6 +75,8 @@ chyme source add acme/api --project platform
 
 # Pull everything new or changed
 chyme sync
+chyme sync --since 2024-01-01   # reach back past the first-sync window
+chyme sync --full               # re-read everything, resumable
 
 # What moved, and when
 chyme activity --since last
@@ -88,17 +90,23 @@ chyme thread '#412' --no-commits --max-bytes 8000
 # Topical search across the corpus
 chyme search "migration tooling" --since 30d
 
-# Save a composed digest, which becomes the new baseline for `--since last`
-chyme digest save --since 7d < digest.md
+# Save a composed digest, which becomes the new baseline for `--since last`.
+# --window takes the pair `chyme activity` printed, so the window you stored is
+# exactly the window you read.
+chyme digest save --window '2026-07-22T09:00:00Z..2026-07-29T09:00:00Z' < digest.md
 chyme digest list
 chyme digest show 7
 ```
 
 `--since last` means *the end of the most recent saved digest window* — "what haven't I seen" — not the last sync.
 
+Composing a digest takes minutes, and `digest save --since 7d` would end its window at the moment of saving rather than the moment the material was read. Everything that moved in between would then belong to no digest, and the next `--since last` would step straight over it. That is why `chyme activity` prints the window it used and `digest save` accepts it back verbatim.
+
+A **first sync of a source reads back 90 days** by default (`sync.firstSyncSince`), because reading a repository's entire history is slow, memory-hungry, and — if the per-run thread limit trips partway — fills the store with its *oldest* threads, leaving `activity --since 7d` empty on a store that looks populated. Reach further back deliberately with `chyme sync --since <when>`. The bound is always reported, never silent.
+
 `chyme activity` returns a compact index with stable thread references and size hints; `chyme thread` expands one. That progressive disclosure is deliberate: it lets an agent plan what to open rather than pulling a week of diffs into its context on the first call.
 
-Every read command takes `--max-bytes`, and every renderer marks what it withheld rather than quietly shortening — `[7 of 23 events not shown]`, `[diff not shown: ~46 KB — pass --diff]`. A silently truncated diff reads as a complete one, and a digest built on it is confidently wrong.
+Every read command takes `--max-bytes`, and every renderer marks what it withheld rather than quietly shortening — `[7 of 23 events not shown, most recent first]`, `[diff not shown: 3 files +133 -4 — pass --diff]`, `[sources not listed: acme/worker (2 threads)]`. A silently truncated diff reads as a complete one, and a digest built on it is confidently wrong.
 
 Only `sync` needs a token. The read commands work against the local store with no credentials configured at all.
 

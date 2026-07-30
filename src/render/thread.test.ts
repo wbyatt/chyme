@@ -121,11 +121,115 @@ describe('renderThread', () => {
     }
   });
 
-  it('says what a diffless view is missing and what it would cost', () => {
+  it('says what a diffless view is missing, and which of it is not stored', () => {
     const text = render();
 
     expect(text).not.toContain('```diff');
-    expect(text).toMatch(/\[diff not shown: 3 files \+133 -4, ~[\d.]+ [KM]?B — pass --diff\]/);
+    expect(text).toContain('[diff not shown: 3 files +133 -4, 1 file with no stored hunk');
+  });
+
+  it('quotes no diff size it cannot measure', () => {
+    // A store synced with `includePatches: false` holds file summaries and no
+    // hunks, which is indistinguishable here from hunks it does hold. The old
+    // estimate read the line counts and advertised ~392 KB for a `--diff` that
+    // emits twenty "[no diff hunk recorded]" lines.
+    fixture.addThread({
+      number: 500,
+      createdAt: '2026-07-01T00:00:00Z',
+      author: ADA,
+      files: Array.from({ length: 20 }, (_, index) => ({
+        path: `src/module${index}.ts`,
+        additions: 400,
+        deletions: 100,
+        patch: null,
+      })),
+    });
+    const view = (options: ThreadViewOptions) =>
+      queryThread(fixture.store, resolveThreadRef(fixture.store, 'platform/acme/api#500'), options);
+
+    const text = renderThread(view({}), { now: NOW });
+    expect(text).toContain('[diff not shown: 20 files +8000 -2000 — pass --diff');
+    // No number at all beats one 400× out: this view has no evidence for one.
+    expect(text).not.toMatch(/~[\d.]+ [KM]?B/);
+
+    const expanded = renderThread(view({ includeDiffs: true }), { now: NOW });
+    expect(expanded).toContain('[no diff hunk recorded]');
+  });
+
+  it('says plainly when the store holds no hunks at all', () => {
+    fixture.addThread({
+      number: 501,
+      createdAt: '2026-07-01T00:00:00Z',
+      author: ADA,
+      files: [
+        { path: 'package-lock.json', additions: 9000, deletions: 900, patch: null, patchTruncated: true },
+        { path: 'dist/bundle.js', additions: 4000, deletions: 40, patch: null, patchTruncated: true },
+      ],
+    });
+
+    const text = renderThread(
+      queryThread(fixture.store, resolveThreadRef(fixture.store, 'platform/acme/api#501'), {}),
+      { now: NOW },
+    );
+
+    expect(text).toContain(
+      '[diff not shown: 2 files +13000 -940 — no hunks stored, --diff would add file headers only]',
+    );
+  });
+
+  it('closes a fence in a comment it had to cut', () => {
+    // A ```suggestion block is routine on a review comment. Cut mid-fence, the
+    // notice saying the comment was cut — and the whole footer under it — would
+    // render as code.
+    fixture.addThread({
+      number: 502,
+      createdAt: '2026-07-01T00:00:00Z',
+      author: ADA,
+      body: null,
+      events: [
+        {
+          at: '2026-07-22T08:00:00Z',
+          by: KAI,
+          body: `Take the constant out:\n\n\`\`\`suggestion\n${'const REFILL_PER_SECOND = 10;\n'.repeat(100)}\`\`\`\n\nOtherwise this reads fine.`,
+        },
+      ],
+    });
+
+    for (const maxBytes of [400, 700, 1000, 1600, 2600, 4000]) {
+      const text = renderThread(
+        queryThread(fixture.store, resolveThreadRef(fixture.store, 'platform/acme/api#502'), {}),
+        { now: NOW, maxBytes },
+      );
+
+      expect(byteLength(text), `budget ${maxBytes}`).toBeLessThanOrEqual(maxBytes);
+      expect([...text.matchAll(/^```/gm)].length % 2, `budget ${maxBytes}`).toBe(0);
+      // The notice, and everything the footer adds after it, sits outside the
+      // fence rather than inside it.
+      const notice = text.indexOf('… [');
+      if (notice >= 0) {
+        expect(text.lastIndexOf('```'), `budget ${maxBytes}`).toBeLessThan(notice);
+      }
+    }
+  });
+
+  it('closes a fence the comment itself left open', () => {
+    fixture.addThread({
+      number: 503,
+      createdAt: '2026-07-01T00:00:00Z',
+      author: ADA,
+      body: null,
+      events: [{ at: '2026-07-22T08:00:00Z', by: KAI, body: 'Repro:\n\n```sh\nchyme sync' }],
+    });
+
+    const text = renderThread(
+      queryThread(fixture.store, resolveThreadRef(fixture.store, 'platform/acme/api#503'), {}),
+      { now: NOW },
+    );
+
+    // Nothing was cut, but an author's own unterminated fence would swallow the
+    // footer just as thoroughly as one of ours.
+    expect(text).toContain('chyme sync');
+    expect([...text.matchAll(/^```/gm)].length % 2).toBe(0);
   });
 
   it('names events its options withheld', () => {

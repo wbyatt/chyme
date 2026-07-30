@@ -17,11 +17,14 @@ chyme activity --since last             # compact index of what moved
 chyme thread <ref>                      # expand the ones that matter
 ```
 
-Then write the digest. If the user wants it to become the new baseline for "what haven't I seen", save it:
+Then write the digest. If the user wants it to become the new baseline for "what haven't I seen", save it with the window `activity` reported:
 
 ```bash
-chyme digest save --since <same window> < digest.md
+chyme activity --since last             # stderr: window: 2026-07-22T09:00:00Z..2026-07-29T09:00:00Z
+chyme digest save --window 2026-07-22T09:00:00Z..2026-07-29T09:00:00Z < digest.md
 ```
+
+`chyme activity` prints `window: <since>..<until>` to stderr — the exact half-open window it enumerated. Keep that line and hand it back as `--window`, so the saved digest covers precisely what you read. Saving with `--since last` alone instead re-resolves the end of the window to the moment of saving, and everything that moved while you were composing falls into a gap that the next `--since last` steps straight over and no digest ever enumerates.
 
 ### 1. Sync first, always
 
@@ -98,12 +101,12 @@ Then add a GitHub token to the config under `credentials.github.token` — the v
 
 | Command | Purpose |
 | --- | --- |
-| `chyme sync [-p <slug>] [--full] [-q]` | Pull new and changed threads. `--full` re-reads everything. |
+| `chyme sync [-p <slug>] [--full] [-s <when>] [-q]` | Pull new and changed threads. `--full` re-reads everything; `--since` reaches back past the stored watermark. |
 | `chyme activity [-s <when>] [-u <when>]` | Index of what moved. Filters: `-a/--author`, `-r/--repo`, `--path`, `-k/--kind`, `--include-bots`. |
 | `chyme thread <ref>` | Expand one thread. `-d/--diff`, `--no-comments`, `--no-commits`. |
 | `chyme search <words...>` | Keyword search. `-s/--since`, `-n/--limit`. |
-| `chyme digest save -s <when>` | Store a composed digest from stdin or `--file`. |
-| `chyme digest list \| show <id>` | Re-read saved digests. |
+| `chyme digest save -w <since>..<until>` | Store a composed digest from stdin or `--file`. `-s/--since` with an optional `-u/--until` also works, but `--window` is what keeps the saved window exactly the one you read. |
+| `chyme digest list \| show <id>` | Re-read saved digests. `list` shows a page and says how many there are. |
 | `chyme project add \| list \| remove` | Manage projects. |
 | `chyme source add \| list \| remove` | Manage a project's sources. |
 

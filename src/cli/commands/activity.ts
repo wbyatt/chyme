@@ -4,8 +4,15 @@ import { queryActivity } from '../../query/activity.js';
 import { resolveWindow } from '../../query/window.js';
 import { renderActivity } from '../../render/activity.js';
 import { openStoreFor, requireSyncedProject, selectProject } from '../context.js';
-import { parseByteBudget, parseSince, parseThreadKinds, parseUntil, splitList } from '../options.js';
-import { emit, runCommand } from '../output.js';
+import {
+  formatWindowArgument,
+  parseByteBudget,
+  parseSince,
+  parseThreadKinds,
+  parseUntil,
+  splitList,
+} from '../options.js';
+import { emit, note, runCommand } from '../output.js';
 
 interface ActivityOptions {
   project?: string;
@@ -68,6 +75,13 @@ export function registerActivityCommand(program: Command): void {
 
           const maxBytes = parseByteBudget(options.maxBytes);
           emit(renderActivity(result, { now, ...(maxBytes === undefined ? {} : { maxBytes }) }));
+
+          // The window this run actually read, in the form `digest save
+          // --window` takes. Composing a digest takes minutes, and a save that
+          // re-resolves its own `--until` to "now" ends the stored window after
+          // the reading stopped — so whatever moved in between is enumerated by
+          // no digest, and `--since last` steps straight over it.
+          note(`window: ${formatWindowArgument(window.since, window.until)}`);
         } finally {
           store.close();
         }

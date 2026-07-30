@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { querySearch } from '../query/search.js';
+import { querySearch, type SearchResults } from '../query/search.js';
 import { actor, createFixture, type Fixture } from '../testing/fixtures.js';
 import { byteLength } from '../util/text.js';
 import { renderSearch } from './search.js';
@@ -55,6 +55,24 @@ describe('renderSearch', () => {
 
     expect(byteLength(text)).toBeLessThanOrEqual(700);
     expect(text).toMatch(/\[\d+ of \d+ hits not shown/);
+  });
+
+  it('still reports the cap and the unresolvable hits when nothing survived', () => {
+    // Every hit pointed at a thread that has left the store: "nothing matches"
+    // on its own would deny fifty matches that exist.
+    const results: SearchResults = {
+      text: 'limiter',
+      hits: [],
+      limit: 50,
+      limited: true,
+      unresolved: 50,
+    };
+
+    const text = renderSearch(results);
+
+    expect(text).toContain('Nothing in the store matches that.');
+    expect(text).toContain('[capped at 50 hits; there may be more');
+    expect(text).toContain('[50 hits pointed at threads no longer in the store]');
   });
 
   it('renders no matches honestly', () => {

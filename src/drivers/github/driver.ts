@@ -87,8 +87,17 @@ async function drain<T>(
     const cursor = after;
     const continued = pageOf(await next(cursor));
     nodes.push(...continued.nodes);
-    // A cursor that does not move would otherwise spin until MAX_PAGES.
-    after = continued.after === cursor ? null : continued.after;
+    // A cursor that does not move is a fault rather than the end of the
+    // connection. Stopping quietly here would drop the tail of a thread's
+    // comments or commits with nothing to show it happened.
+    if (continued.after === cursor) {
+      throw new DriverError(
+        `GitHub stopped advancing its cursor while paging ${what}.`,
+        DRIVER_ID,
+        'Try again; if it persists, please report it.',
+      );
+    }
+    after = continued.after;
   }
 
   return nodes;
@@ -230,15 +239,28 @@ export class GitHubDriver implements SourceDriver {
         collected.push(summary);
       }
 
-      // A cursor that stops moving would otherwise spin until MAX_PAGES.
-      if (page.after === null || page.after === after) return collected;
+      // The natural end of the connection: everything older has been seen.
+      if (page.after === null) return collected;
+
+      // A cursor that stops moving is a fault, and returning here would be
+      // silent data loss rather than a clean stop. This walk pages newest-first,
+      // so the part it has not reached is the *oldest* end of the window — and
+      // sync would then advance its watermark past threads it never saw, putting
+      // them permanently below the waterline. Fail loudly instead.
+      if (page.after === after) {
+        throw new DriverError(
+          `GitHub stopped advancing its cursor while paging ${what}.`,
+          DRIVER_ID,
+          'Nothing was written for this source, so no watermark moved. Try again; if it persists, please report it.',
+        );
+      }
       after = page.after;
     }
 
     throw new DriverError(
       `GitHub kept paging ${what} past ${MAX_PAGES} pages.`,
       DRIVER_ID,
-      'This almost certainly means a cursor stopped advancing rather than that the data is real. Please report it.',
+      'If this source really is that large, narrow the window: set sync.firstSyncSince in the config, or pass chyme sync --since <when>.',
     );
   }
 

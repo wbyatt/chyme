@@ -1,4 +1,14 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import {
+  closeSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
 import { ConfigError, NotFoundError } from '../util/errors.js';
 import { resolveConfigPath } from './paths.js';
@@ -136,12 +146,62 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): LoadedConfig {
 /**
  * Write the config atomically and readable only by its owner — it may contain
  * an API token.
+ *
+ * Three things here are deliberate, and each was wrong in an earlier version:
+ *
+ * - The temp file is *created* with mode 0600 via an exclusive open. Passing
+ *   `mode` to `writeFileSync` only applies when the file is created, so writing
+ *   over an existing temp file left it at whatever mode it already had — and
+ *   `writeFileSync` follows symlinks, so a planted link could have carried the
+ *   token somewhere else entirely. `wx` refuses to open anything that exists.
+ * - The suffix is random rather than the pid, because pids recycle and the
+ *   predictable name is the thing that made a stale file reusable.
+ * - The temp file is removed if the rename fails, so a token never stays behind
+ *   in a file nothing will clean up.
  */
 export function saveConfig(config: ChymeConfig, path: string): void {
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const temporary = join(dirname(path), `.config.${process.pid}.tmp`);
-  writeFileSync(temporary, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
-  renameSync(temporary, path);
+  const directory = dirname(path);
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+
+  const temporary = join(directory, `.config.${randomBytes(8).toString('hex')}.tmp`);
+  const payload = `${JSON.stringify(config, null, 2)}\n`;
+
+  let handle: number;
+  try {
+    handle = openSync(temporary, 'wx', 0o600);
+  } catch (error) {
+    throw new ConfigError(
+      `Could not create a temporary file next to ${path}: ${(error as Error).message}`,
+    );
+  }
+
+  try {
+    writeFileSync(handle, payload);
+    // Durable before the rename: otherwise a crash can leave the config
+    // replaced by a zero-length file, and the token with it.
+    fsyncSync(handle);
+  } catch (error) {
+    closeSync(handle);
+    removeQuietly(temporary);
+    throw new ConfigError(`Could not write ${path}: ${(error as Error).message}`);
+  }
+  closeSync(handle);
+
+  try {
+    renameSync(temporary, path);
+  } catch (error) {
+    removeQuietly(temporary);
+    throw new ConfigError(`Could not replace ${path}: ${(error as Error).message}`);
+  }
+}
+
+function removeQuietly(path: string): void {
+  try {
+    unlinkSync(path);
+  } catch {
+    // Best effort. The write already failed; a cleanup failure on top of it has
+    // nothing useful to add to the error the caller is about to see.
+  }
 }
 
 export function findProject(config: ChymeConfig, slug: string): ProjectConfig {

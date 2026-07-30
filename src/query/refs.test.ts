@@ -136,4 +136,106 @@ describe('resolveThreadRef', () => {
     const f = open();
     expect(() => resolveThreadRef(f.store, 'platform/acme/api#999')).toThrow(NotFoundError);
   });
+
+  it('still resolves a kind the config has since stopped asking for', () => {
+    const f = open();
+    f.addThread({ number: 41, kind: 'issue', createdAt: '2026-07-01T00:00:00Z' });
+
+    // What `upsertSource` does when a user narrows `kinds` in their config: the
+    // declaration changes, the already-synced issue stays, and `activity` goes
+    // on printing its reference.
+    f.store.sources.upsertSource(
+      { projectId: f.project.id, driver: 'github', key: 'acme/api', kinds: ['pull_request'] },
+      '2026-07-02T00:00:00Z',
+    );
+
+    expect(resolveThreadRef(f.store, 'platform/acme/api#41').thread.kind).toBe('issue');
+  });
+
+  it('resolves a kind no driver in this build has heard of', () => {
+    const f = open();
+    f.addSource('acme/tickets', ['ticket']);
+    f.addThread({ number: 88, source: 'acme/tickets', kind: 'ticket', createdAt: '2026-07-01T00:00:00Z' });
+
+    expect(resolveThreadRef(f.store, 'platform/acme/tickets#88').thread.kind).toBe('ticket');
+  });
+});
+
+/**
+ * `chyme project add acme` next to a project that follows `acme/api` is an
+ * ordinary setup, and it makes `acme/api#412` mean two things at once.
+ */
+describe('resolveThreadRef when a project is named after a source owner', () => {
+  /** A second project `acme` whose one source is keyed `api`. */
+  function addAcmeProject(f: Fixture): (number: number) => void {
+    const project = f.store.projects.upsertProject(
+      { slug: 'acme', name: 'Acme' },
+      '2026-01-01T00:00:00Z',
+    );
+    const source = f.store.sources.upsertSource(
+      { projectId: project.id, driver: 'github', key: 'api', kinds: ['pull_request'] },
+      '2026-01-01T00:00:00Z',
+    );
+
+    return (number) => {
+      f.store.threads.upsertThread(
+        source.id,
+        {
+          externalId: `pr_api_${number}`,
+          kind: 'pull_request',
+          number,
+          title: `Thread ${number} in the acme project`,
+          state: 'open',
+          isDraft: false,
+          author: null,
+          url: `https://example.test/api/pull/${number}`,
+          body: null,
+          createdAt: '2026-07-01T00:00:00Z',
+          updatedAt: '2026-07-01T00:00:00Z',
+          closedAt: null,
+          mergedAt: null,
+          labels: [],
+          raw: null,
+        },
+        '2026-07-01T00:00:00Z',
+      );
+    };
+  }
+
+  it('falls back to the source-key reading when the project reading finds nothing', () => {
+    const f = open();
+    addAcmeProject(f);
+    f.addThread({ number: 412, createdAt: '2026-07-01T00:00:00Z' });
+
+    // Project "acme" and its source "api" are both real; the thread is not.
+    // Committing to that reading refused a reference that plainly resolves.
+    expect(resolveThreadRef(f.store, 'acme/api#412', { projectSlug: 'platform' }).ref).toBe(
+      'platform/acme/api#412',
+    );
+  });
+
+  it('keeps the project reading when only that one resolves', () => {
+    const f = open();
+    addAcmeProject(f)(7);
+
+    expect(resolveThreadRef(f.store, 'acme/api#7', { projectSlug: 'platform' }).ref).toBe(
+      'acme/api#7',
+    );
+  });
+
+  it('errors with both candidates when each reading names a real thread', () => {
+    const f = open();
+    addAcmeProject(f)(412);
+    f.addThread({ number: 412, createdAt: '2026-07-01T00:00:00Z' });
+
+    try {
+      resolveThreadRef(f.store, 'acme/api#412', { projectSlug: 'platform' });
+      expect.unreachable('should have thrown');
+    } catch (error) {
+      expect((error as Error).message).toMatch(/matches 2 threads/);
+      const hint = (error as { hint?: string }).hint ?? '';
+      expect(hint).toContain('acme/api#412');
+      expect(hint).toContain('platform/acme/api#412');
+    }
+  });
 });

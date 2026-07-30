@@ -41,12 +41,27 @@ export const syncConfigSchema = z.object({
   /** Per-file patch cap in bytes. Oversized patches are recorded as truncated, never as empty. */
   maxPatchBytes: z.number().int().positive().default(65_536),
   /**
-   * Ceiling on threads fetched per source, per thread kind, in one sync run.
-   * A safety valve for a first sync against a busy repository, not a
-   * normal-operation limit. When it trips, the run says so and the watermark is
-   * still accurate, so simply syncing again continues from where it stopped.
+   * Ceiling on threads *written* per source, per thread kind, in one sync run.
+   *
+   * A backstop, not the mechanism that keeps a first sync affordable — that is
+   * `firstSyncSince`. It bounds detail fetches only; a driver may still have to
+   * page a listing to discover what changed. When it trips, the run says so and
+   * the watermark is still accurate, so syncing again continues where it
+   * stopped.
    */
   maxThreadsPerRun: z.number().int().positive().default(500),
+
+  /**
+   * How far back a *first* sync of a source reads. Null means all history.
+   *
+   * Bounded by default because reading a source's entire history is the wrong
+   * default for a digest tool: it is slow, it can hold a very large repository's
+   * summaries in memory at once, and if `maxThreadsPerRun` trips during it the
+   * store fills with the oldest threads — leaving `activity --since 7d` empty on
+   * a store that looks populated. Reach further back deliberately with
+   * `chyme sync --since <when>`.
+   */
+  firstSyncSince: z.string().nullable().default('90d'),
 });
 
 export const configSchema = z.object({

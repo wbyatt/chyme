@@ -12,15 +12,33 @@ import { DriverError } from '../../util/errors.js';
 
 const DRIVER_ID = 'github';
 
-/** Four attempts is two seconds of backoff — enough for a blip, not a stall. */
+/** Four attempts: enough for a blip, not a stall. */
 const DEFAULT_MAX_ATTEMPTS = 4;
 const BASE_DELAY_MS = 500;
+
+/**
+ * Total time one request may spend asleep across all its retries.
+ *
+ * `MAX_HONOURED_RETRY_AFTER_MS` bounds a single sleep, which is not the same
+ * thing: three honoured pauses at the maximum would be three minutes of silence
+ * for one request, and a thread costs five or more requests. Nothing is printed
+ * while it waits, so past a point this is indistinguishable from a hang — which
+ * is exactly what the comment above the attempt count used to claim was
+ * impossible.
+ */
+const MAX_TOTAL_BACKOFF_MS = 90_000;
 
 /**
  * A secondary rate limit longer than this is not a blip, it is a signal to stop
  * and let a human decide. Sitting in a sleep for minutes looks like a hang.
  */
 const MAX_HONOURED_RETRY_AFTER_MS = 60_000;
+
+/** GitHub's own guidance for a secondary limit that arrives without a Retry-After. */
+const SECONDARY_LIMIT_BACKOFF_MS = 60_000;
+
+/** The wording GitHub uses for secondary limits, in both its current and older forms. */
+const SECONDARY_LIMIT = /secondary rate limit|abuse detection/i;
 
 /**
  * GraphQL error types that mean "try again", as opposed to "you asked for
@@ -120,6 +138,31 @@ function headerNumber(
   return Number.isFinite(value) ? value : null;
 }
 
+/**
+ * `Retry-After` in milliseconds.
+ *
+ * RFC 9110 permits either a number of seconds or an HTTP-date, and GitHub sends
+ * both. Reading only the numeric form meant the date form fell through as "no
+ * Retry-After at all", which then got diagnosed as a token-scope problem.
+ * Negative and empty values are refused rather than becoming an instant retry.
+ */
+function retryAfterMs(
+  headers: Record<string, string | number | undefined>,
+  nowMs: number,
+): number | null {
+  const raw = headers['retry-after'];
+  if (raw === undefined) return null;
+
+  const text = String(raw).trim();
+  if (text === '') return null;
+
+  const seconds = Number(text);
+  if (Number.isFinite(seconds)) return seconds >= 0 ? seconds * 1000 : null;
+
+  const at = Date.parse(text);
+  return Number.isNaN(at) ? null : Math.max(0, at - nowMs);
+}
+
 /** "in 43m (at 2026-07-29T14:05:00Z)" — both forms, because both get used. */
 function describeReset(resetEpochSeconds: number | null, nowMs: number): string {
   if (resetEpochSeconds === null) return 'shortly';
@@ -185,13 +228,14 @@ export class GitHubClient {
 
   async #attempt<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
     let lastError: DriverError | null = null;
+    let sleptMs = 0;
 
     for (let attempt = 1; attempt <= this.#maxAttempts; attempt += 1) {
       signal?.throwIfAborted();
       try {
         return await operation();
       } catch (error) {
-        // An abort is the caller's own decision, not a forge failure.
+        // An abort is the caller's own decision, not a source failure.
         if (signal?.aborted) throw error;
 
         const verdict = this.#classify(error);
@@ -202,7 +246,19 @@ export class GitHubClient {
         }
         const delayMs =
           verdict.retry === 'backoff' ? backoffDelayMs(attempt) : verdict.retry.afterMs;
+
+        // A deadline across the whole request, not just this one sleep.
+        if (sleptMs + delayMs > MAX_TOTAL_BACKOFF_MS) {
+          throw new DriverError(
+            verdict.error.message,
+            DRIVER_ID,
+            `Retrying would mean waiting more than ${Math.round(MAX_TOTAL_BACKOFF_MS / 1000)}s on this one request. Re-run the sync later; it resumes from its watermark.`,
+            error,
+          );
+        }
+
         await this.#sleep(delayMs, signal);
+        sleptMs += delayMs;
       }
     }
 
@@ -279,16 +335,16 @@ export class GitHubClient {
     headers: Record<string, string | number | undefined>,
     message: string,
   ): Verdict {
-    const retryAfterSeconds = headerNumber(headers, 'retry-after');
-    if (retryAfterSeconds !== null) {
-      const waitMs = retryAfterSeconds * 1000;
+    const waitMs = retryAfterMs(headers, this.#now());
+    if (waitMs !== null) {
+      const seconds = Math.ceil(waitMs / 1000);
       if (waitMs <= MAX_HONOURED_RETRY_AFTER_MS) {
         return {
           retry: { afterMs: waitMs },
           error: new DriverError(
             `GitHub applied a secondary rate limit (HTTP ${status}).`,
             DRIVER_ID,
-            `GitHub asked for a ${retryAfterSeconds}s pause.`,
+            `GitHub asked for a ${seconds}s pause.`,
             error,
           ),
         };
@@ -298,7 +354,7 @@ export class GitHubClient {
         error: new DriverError(
           `GitHub applied a secondary rate limit (HTTP ${status}).`,
           DRIVER_ID,
-          `GitHub asked for a ${retryAfterSeconds}s pause, which is too long to wait inside one run. Re-run the sync after that; it resumes from where it stopped.`,
+          `GitHub asked for a ${seconds}s pause, which is too long to wait inside one run. Re-run the sync after that; it resumes from where it stopped.`,
           error,
         ),
       };
@@ -316,6 +372,22 @@ export class GitHubClient {
           `GitHub rate limit exhausted${limit === null ? '' : ` (${limit}/hour)`}.`,
           DRIVER_ID,
           `The limit resets ${describeReset(reset, this.#now())}. Sync resumes from its watermark, so re-running after that loses nothing.`,
+          error,
+        ),
+      };
+    }
+
+    // A secondary limit does not touch the primary hourly budget, and GitHub
+    // does not always send a usable Retry-After with one. Without this the
+    // response fell through to the token-scope branch below and told the user to
+    // fix their credentials when the correct advice was to wait.
+    if (SECONDARY_LIMIT.test(message)) {
+      return {
+        retry: { afterMs: SECONDARY_LIMIT_BACKOFF_MS },
+        error: new DriverError(
+          `GitHub applied a secondary rate limit (HTTP ${status}).`,
+          DRIVER_ID,
+          'No pause length was given, so Chyme waits a minute and tries again.',
           error,
         ),
       };

@@ -39,11 +39,25 @@ export function fit(text: string, maxBytes: number, what: string): Fitted {
   const notice = truncationNotice(cut.omittedBytes, what);
   const joined = cut.text === '' ? notice : `${cut.text}\n${notice}`;
 
-  // Clamp regardless: the budget is a guarantee, not an intention.
+  if (byteLength(joined) <= maxBytes) {
+    return { text: joined, truncated: true, omittedBytes: cut.omittedBytes };
+  }
+
+  // The ceiling cannot hold a whole notice. Clamping the sentence mid-word
+  // produces "… [39 B of this notice om", which reads as content rather than as
+  // a marker — the one truncation in the system that must never be mistakable.
+  // A bare ellipsis says the same thing unambiguously in three bytes.
+  const ellipsis = '…';
+  const ellipsisBytes = byteLength(ellipsis);
+  if (maxBytes < ellipsisBytes) {
+    return { text: '', truncated: true, omittedBytes: byteLength(text) };
+  }
+
+  const minimal = truncateToBytes(text, maxBytes - ellipsisBytes);
   return {
-    text: truncateToBytes(joined, maxBytes).text,
+    text: `${minimal.text}${ellipsis}`,
     truncated: true,
-    omittedBytes: cut.omittedBytes,
+    omittedBytes: byteLength(text) - byteLength(minimal.text),
   };
 }
 
@@ -72,7 +86,22 @@ export class BudgetWriter {
    * pathologically small ceiling still shows some content.
    */
   reserve(bytes: number): void {
-    this.reserved += Math.min(bytes, Math.floor(this.maxBytes * 0.5));
+    if (bytes <= 0) return;
+    // Plus a separator: the footer is appended as another block, so reserving
+    // only its own length leaves it one separator short and the last bytes of
+    // the notice — the part naming what was cut — get trimmed off.
+    const withSeparator = bytes + byteLength(this.separator);
+    this.reserved += Math.min(withSeparator, Math.floor(this.maxBytes * 0.5));
+  }
+
+  /**
+   * Give the reserve back so it can be spent on ordinary writes.
+   *
+   * For renderers that put their must-not-be-quiet lines *last* but size the
+   * reserve for them up front.
+   */
+  release(): void {
+    this.reserved = 0;
   }
 
   get remaining(): number {
@@ -102,7 +131,11 @@ export class BudgetWriter {
   /** Spend the reserve. Footers say what was left out, so they outrank content. */
   writeFooter(block: string): void {
     const separator = this.blocks.length > 0 ? byteLength(this.separator) : 0;
-    const text = truncateToBytes(block, Math.max(0, this.maxBytes - this.used - separator)).text;
+    const room = Math.max(0, this.maxBytes - this.used - separator);
+    // `fit`, not a bare truncation: at a ceiling too small even for the notices,
+    // the notices themselves get cut, and a half-written "[3 threads exclu" is
+    // the one truncation in the system that would otherwise go unmarked.
+    const text = fit(block, room, 'this notice').text;
     if (text === '') return;
     this.blocks.push(text);
     this.used += this.cost(text);

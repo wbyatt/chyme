@@ -16,47 +16,40 @@ export const DEFAULT_ACTIVITY_BYTES = 32_768;
 /** Longer than this and the one-line summary stops being one line. */
 const SUMMARY_CHARS = 160;
 
+/** The writer's block separator, which planning has to charge for to match it. */
+const SEPARATOR_BYTES = 2;
+
 export function renderActivity(result: ActivityResult, options: RenderOptions = {}): string {
   const now = options.now ?? new Date();
   const writer = new BudgetWriter(options.maxBytes ?? DEFAULT_ACTIVITY_BYTES, '\n\n');
-  // Sized from the worst case — every thread cut — so the notices that say what
-  // is missing can never themselves be the thing that gets cut.
-  writer.reserve(byteLength(footerNotes(result, 0).join('\n')));
+  const groups = groupBySource(result.threads);
+  // Sized from the worst case — every thread cut and every source left unlisted
+  // — so the notices that say what is missing can never themselves be the thing
+  // that gets cut.
+  writer.reserve(byteLength(footerNotes(result, 0, groups).join('\n')));
   writer.writeFitted(header(result), 'header');
 
   if (result.threads.length === 0) {
     // An empty window is an answer, not a failure. Saying it plainly stops a
     // reader concluding the query was malformed.
     writer.write('No threads moved in this window.');
-    footer(writer, result, 0);
+    footer(writer, result, 0, []);
     return writer.text();
   }
 
+  const planned = plan(result.threads, groups, now, writer.remaining);
+
   let shown = 0;
-  outer: for (const group of groupBySource(result.threads)) {
-    const heading = `## ${group.key} — ${plural(group.threads.length, 'thread')}`;
-    let headingWritten = false;
-
-    for (const activity of group.threads) {
-      // The heading is only worth its bytes if a thread follows it, so it goes
-      // out attached to the first block that fits.
-      const withHeading = (block: string): string =>
-        headingWritten ? block : `${heading}\n\n${block}`;
-
-      // The summary line is a courtesy derived from the body — the block still
-      // carries the reference and the size hint without it — so it is the first
-      // thing dropped when a thread nearly fits.
-      const written =
-        writer.write(withHeading(threadBlock(activity, now, true))) ||
-        writer.write(withHeading(threadBlock(activity, now, false)));
-      if (!written) break outer;
-
-      headingWritten = true;
-      shown += 1;
-    }
+  const unlisted: SourceGroup[] = [];
+  for (const group of planned) {
+    // A heading and its threads go out as one block. A heading that survived
+    // while its threads did not would name a source it does not list, and the
+    // count on it is only true once the group's contents are settled.
+    if (group.blocks.length > 0 && writer.write(groupBlock(group))) shown += group.blocks.length;
+    else unlisted.push(group.source);
   }
 
-  footer(writer, result, shown);
+  footer(writer, result, shown, unlisted);
   return writer.text();
 }
 
@@ -108,6 +101,85 @@ function groupBySource(threads: readonly ThreadActivity[]): SourceGroup[] {
   return [...groups.values()];
 }
 
+interface PlannedGroup {
+  source: SourceGroup;
+  /** Thread blocks in recency order; empty when nothing from this source fit. */
+  blocks: string[];
+}
+
+/**
+ * What fits, decided in recency order rather than in layout order.
+ *
+ * Threads arrive sorted by recency and are laid out by source, and those two
+ * orders are not the same one. Writing group by group until the budget binds
+ * drops whatever sorted last: a whole source could vanish while older threads
+ * from another were shown, under a footer claiming the cut was least recent
+ * first. Choosing here and laying out afterwards makes that claim true — what is
+ * dropped is a strict tail of the recency order.
+ */
+function plan(
+  threads: readonly ThreadActivity[],
+  groups: readonly SourceGroup[],
+  now: Date,
+  budget: number,
+): PlannedGroup[] {
+  const planned = new Map<string, PlannedGroup>(
+    groups.map((group) => [group.key, { source: group, blocks: [] }]),
+  );
+  let used = 0;
+
+  for (const activity of threads) {
+    const group = planned.get(activity.source.key);
+    if (!group) continue;
+
+    // Charged against the longest form the heading can take: once the group's
+    // contents are settled the count can only shrink, so the write that follows
+    // cannot overrun what was planned for it.
+    const heading =
+      group.blocks.length === 0
+        ? byteLength(partialHeading(group.source, group.source.threads.length)) + SEPARATOR_BYTES
+        : 0;
+
+    // The summary line is a courtesy derived from the body — the block still
+    // carries the reference and the size hint without it — so it is the first
+    // thing dropped when a thread nearly fits.
+    let block: string | null = null;
+    for (const withSummary of [true, false]) {
+      const candidate = threadBlock(activity, now, withSummary);
+      if (used + heading + byteLength(candidate) + SEPARATOR_BYTES > budget) continue;
+      block = candidate;
+      break;
+    }
+
+    // Stop rather than skip: letting a smaller, older thread take a larger one's
+    // place would make what was dropped something other than the least recent.
+    if (block === null) break;
+
+    used += heading + byteLength(block) + SEPARATOR_BYTES;
+    group.blocks.push(block);
+  }
+
+  return [...planned.values()];
+}
+
+function groupBlock(group: PlannedGroup): string {
+  const total = group.source.threads.length;
+  const heading =
+    group.blocks.length === total
+      ? `## ${group.source.key} — ${plural(total, 'thread')}`
+      : partialHeading(group.source, group.blocks.length);
+  return [heading, ...group.blocks].join('\n\n');
+}
+
+/**
+ * A heading for a group the budget cut into. It states both numbers because a
+ * heading reading "10 threads" above four of them is a miscount the reader has
+ * no way to catch.
+ */
+function partialHeading(group: SourceGroup, shown: number): string {
+  return `## ${group.key} — ${shown} of ${plural(group.threads.length, 'thread')}`;
+}
+
 function threadBlock(activity: ThreadActivity, now: Date, withSummary: boolean): string {
   const { thread, size } = activity;
   const lines = [`${activity.ref} [${threadStatus(thread)}] ${thread.title}`];
@@ -144,12 +216,21 @@ function threadBlock(activity: ThreadActivity, now: Date, withSummary: boolean):
  * Everything the reader would otherwise have to spot for themselves. Silent
  * when nothing was left out, and never silent when something was.
  */
-function footer(writer: BudgetWriter, result: ActivityResult, shown: number): void {
-  const notes = footerNotes(result, shown);
+function footer(
+  writer: BudgetWriter,
+  result: ActivityResult,
+  shown: number,
+  unlisted: readonly SourceGroup[],
+): void {
+  const notes = footerNotes(result, shown, unlisted);
   if (notes.length > 0) writer.writeFooter(notes.join('\n'));
 }
 
-function footerNotes(result: ActivityResult, shown: number): string[] {
+function footerNotes(
+  result: ActivityResult,
+  shown: number,
+  unlisted: readonly SourceGroup[],
+): string[] {
   const notes: string[] = [];
 
   const dropped = result.threads.length - shown;
@@ -157,6 +238,15 @@ function footerNotes(result: ActivityResult, shown: number): string[] {
     notes.push(
       `[${dropped} of ${result.threads.length} threads not shown, least recent first — raise the byte budget or narrow the window]`,
     );
+  }
+  if (unlisted.length > 0) {
+    // A source that lost every one of its threads leaves no heading behind, and
+    // "acme/worker was quiet" and "acme/worker did not fit" are opposite
+    // conclusions the reader would otherwise have no way to tell apart.
+    const named = unlisted
+      .map((group) => `${group.key} (${plural(group.threads.length, 'thread')})`)
+      .join(', ');
+    notes.push(`[sources not listed: ${named}]`);
   }
   if (result.excluded.botOnly > 0) {
     notes.push(`[${plural(result.excluded.botOnly, 'thread')} excluded: bot activity only]`);

@@ -27,6 +27,9 @@ export function renderSearch(results: SearchResults, options: RenderOptions = {}
 
   if (results.hits.length === 0) {
     writer.write('Nothing in the store matches that.');
+    // Through the footer, not around it: a cap or an unresolvable hit means
+    // matches existed, and "nothing matches" on its own would deny them.
+    footer(writer, results, 0);
     return writer.text();
   }
 

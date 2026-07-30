@@ -79,6 +79,17 @@ describe('queryThread', () => {
     expect(result.events.map((entry) => entry.event.kind)).toEqual(['state_change', 'commit']);
     expect(result.omittedEvents).toEqual({ comment: 1 });
   });
+
+  it('counts participants over the thread, not over the filtered view', () => {
+    // Kai is only in the comment, so counting participants from the events that
+    // survived the filter reported one participant beside a total of three
+    // events — two numbers about different things, printed side by side.
+    const result = view({ includeComments: false });
+
+    expect(result.totals.events).toBe(3);
+    expect(result.totals.participants).toBe(2);
+    expect(result.totals.participants).toBe(view().totals.participants);
+  });
 });
 
 describe('queryThread references', () => {

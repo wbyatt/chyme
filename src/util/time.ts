@@ -9,7 +9,16 @@ export type TimeSpec =
   | { kind: 'last' }
   | { kind: 'instant'; at: string };
 
-const RELATIVE = /^(\d+)\s*(m|h|d|w)$/i;
+/**
+ * Case-sensitive, deliberately.
+ *
+ * This was `/i`, which made `6M` mean six *minutes* — a plausible way to write
+ * six months, silently answered with a six-minute window and "no threads moved".
+ * Anything that looks like an offset but is not exactly one of these units is
+ * now refused rather than guessed at.
+ */
+const RELATIVE = /^(\d+)\s*(m|h|d|w)$/;
+const LOOKS_RELATIVE = /^(\d+)\s*([A-Za-z]+)$/;
 
 const UNIT_MS: Record<string, number> = {
   m: 60_000,
@@ -17,6 +26,9 @@ const UNIT_MS: Record<string, number> = {
   d: 86_400_000,
   w: 604_800_000,
 };
+
+/** Beyond this a Date is invalid; ECMAScript caps at ±100,000,000 days from the epoch. */
+const MAX_TIME_MS = 8.64e15;
 
 /** ISO 8601 UTC with second precision — the only timestamp format Chyme stores. */
 export function toIso(date: Date): string {
@@ -42,12 +54,33 @@ export function parseTimeSpec(input: string, now: Date): TimeSpec {
   const relative = RELATIVE.exec(value);
   if (relative) {
     const amount = Number(relative[1]);
-    const unit = relative[2]!.toLowerCase();
-    const step = UNIT_MS[unit]!;
+    const step = UNIT_MS[relative[2]!]!;
     if (amount === 0) {
       throw new ChymeError(`"${value}" is a zero-length window.`);
     }
-    return { kind: 'instant', at: toIso(new Date(now.getTime() - amount * step)) };
+
+    const at = now.getTime() - amount * step;
+    // Guarded rather than left to throw: `new Date(-Infinity).toISOString()`
+    // raises a bare RangeError, which the CLI would print as a stack trace and
+    // the user would read as a bug in Chyme rather than a typo in their command.
+    if (!Number.isFinite(at) || Math.abs(at) > MAX_TIME_MS) {
+      throw new ChymeError(
+        `"${value}" reaches further back than any date can express.`,
+        'Try a smaller offset, or a date like 2020-01-01.',
+      );
+    }
+    return { kind: 'instant', at: toIso(new Date(at)) };
+  }
+
+  const looksRelative = LOOKS_RELATIVE.exec(value);
+  if (looksRelative) {
+    const unit = looksRelative[2]!;
+    throw new ChymeError(
+      `"${value}" is not a time unit Chyme knows.`,
+      unit === 'M' || unit === 'mo' || unit === 'y' || unit === 'Y'
+        ? 'Units are m (minutes), h, d and w, lowercase. There is no month or year unit — say 90d, or give a date like 2026-01-01.'
+        : 'Units are m (minutes), h (hours), d (days) and w (weeks), lowercase.',
+    );
   }
 
   // A bare calendar date means the start of that day, UTC.
@@ -59,7 +92,12 @@ export function parseTimeSpec(input: string, now: Date): TimeSpec {
     return { kind: 'instant', at: toIso(parsed) };
   }
 
-  const parsed = new Date(value);
+  // A timestamp with no zone is read as UTC, matching the bare-date case above.
+  // `new Date()` would read it as local time, so the same command would mean
+  // different instants on two machines and a bare date and a zoneless datetime
+  // one second apart would land thirteen hours apart for a UTC+13 user.
+  const zoneless = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(value);
+  const parsed = new Date(zoneless ? `${value.replace(' ', 'T')}Z` : value);
   if (Number.isNaN(parsed.getTime())) {
     throw new ChymeError(
       `Could not read "${value}" as a time.`,

@@ -39,6 +39,29 @@ export function selectProject(config: ChymeConfig, slug: string | undefined): Pr
 }
 
 /**
+ * The same, for commands that can proceed without a project — because the
+ * argument names its own (`platform/acme/api#412`) or because the whole store
+ * is a reasonable scope (`search`).
+ *
+ * A slug the user typed is still resolved strictly: swallowing that error turns
+ * `--project platfrom` into "no such thread", which sends them looking for the
+ * wrong mistake. Only the *absence* of a default — several projects configured,
+ * or none — is tolerated, because that is what "the caller will say which"
+ * looks like from here.
+ */
+export function optionalProject(
+  config: ChymeConfig,
+  slug: string | undefined,
+): ProjectConfig | undefined {
+  if (slug !== undefined) return findProject(config, slug);
+  try {
+    return defaultProject(config);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * The stored counterpart of a configured project. A project can be configured
  * and never synced, and the read commands have nothing to say about it until it
  * has been — which is a different problem from a typo in the slug, so it gets a

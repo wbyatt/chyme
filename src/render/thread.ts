@@ -49,6 +49,12 @@ const STOP_BYTES = 96;
 const MIN_BODY_BYTES = 240;
 /** A thread with a hundred references would otherwise bury its own header. */
 const MAX_REFS = 12;
+/** What a cut comment's notice calls itself, named once so it can be sized. */
+const COMMENT = 'this comment';
+/** `fit`'s own allowance, for the same reason: `formatBytes` is not monotonic. */
+const NOTICE_SLACK = 8;
+/** The newlines joining a cut comment's head, body, closing fence and notice. */
+const JOIN_BYTES = 3;
 
 interface Section {
   text: string;
@@ -196,11 +202,11 @@ function renderDiscussion(events: readonly ThreadEvent[], maxBytes: number): Sec
     // Twice an even split: one long comment may take more than its share, but
     // not so much that it eats the rest of the conversation.
     const share = Math.max(MIN_EVENT_BYTES, Math.floor((remaining / (events.length - index)) * 2));
-    const fitted = fit(eventBlock(entry), Math.min(remaining - separator, share), 'this comment');
-    const cost = byteLength(fitted.text) + separator;
+    const block = eventBlock(entry, Math.min(remaining - separator, share));
+    const cost = byteLength(block) + separator;
     if (cost > remaining) break;
 
-    blocks.push(fitted.text);
+    blocks.push(block);
     used += cost;
     shown += 1;
   }
@@ -208,13 +214,87 @@ function renderDiscussion(events: readonly ThreadEvent[], maxBytes: number): Sec
   return { text: blocks.join('\n\n'), shown, total: events.length };
 }
 
+/**
+ * One event, cut to fit with the fences in its body left closed.
+ *
+ * The body is cut before the notice is appended, for the same reason a patch is
+ * cut before it is fenced: a review comment carrying a ```suggestion block — a
+ * routine thing to find in one — cut mid-fence leaves the fence open, and then
+ * the notice saying the comment was cut and every footer note after it render as
+ * code. They survive as text but stop reading as markers, which is the one
+ * failure this file exists to prevent.
+ */
+function eventBlock(entry: ThreadEvent, maxBytes: number): string {
+  const head = eventHead(entry);
+  const body = entry.event.body;
+  if (!body) return fit(head, maxBytes, COMMENT).text;
+
+  const open = unclosedFence(body);
+  // Closed whether or not we cut: an author's own unterminated fence would
+  // swallow the rest of the output just as thoroughly as one of ours.
+  const whole = open ? `${head}\n${body}\n${open}` : `${head}\n${body}`;
+  if (byteLength(whole) <= maxBytes) return whole;
+
+  // Everything that has to survive the cut, so the body is charged for the rest:
+  // the head, the notice against its worst case, the closing fence the cut may
+  // need, and the newlines joining the three of them to it.
+  const notice = byteLength(truncationNotice(byteLength(body), COMMENT)) + NOTICE_SLACK;
+  const room = maxBytes - byteLength(head) - notice - longestFence(body) - JOIN_BYTES;
+  const cut = room > 0 ? truncateToBytesAtLine(body, room) : null;
+
+  if (!cut || cut.text === '') {
+    // No room for any of the body. Naming it as gone beats a header standing
+    // over nothing, which reads as a comment that said nothing.
+    return fit(`${head}\n${truncationNotice(byteLength(body), COMMENT)}`, maxBytes, COMMENT).text;
+  }
+
+  const closer = unclosedFence(cut.text);
+  const parts = closer ? [head, cut.text, closer] : [head, cut.text];
+  parts.push(truncationNotice(cut.omittedBytes, COMMENT));
+  return parts.join('\n');
+}
+
+/**
+ * The fence marker still open at the end of `text`, or null.
+ *
+ * Markdown's own rule: three or more backticks or tildes open a block, and only
+ * a run of the same character, at least as long and with nothing after it,
+ * closes it. Reading an opener where there is none would have us append a stray
+ * fence and cause the very problem this exists to avoid, so the test is strict.
+ */
+function unclosedFence(text: string): string | null {
+  let open: string | null = null;
+  for (const line of text.split('\n')) {
+    const match = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    if (!match) continue;
+    const marker = match[1]!;
+    const rest = match[2]!;
+    if (open === null) {
+      // A backtick fence's info string cannot itself contain a backtick.
+      if (marker.startsWith('`') && rest.includes('`')) continue;
+      open = marker;
+    } else if (marker[0] === open[0] && marker.length >= open.length && rest.trim() === '') {
+      open = null;
+    }
+  }
+  return open;
+}
+
+/** The longest fence marker in `text`: the most a closing one can cost. */
+function longestFence(text: string): number {
+  let longest = 0;
+  for (const [match] of text.matchAll(/^ {0,3}(?:`{3,}|~{3,})/gm)) {
+    longest = Math.max(longest, match.trimStart().length);
+  }
+  return longest;
+}
+
 /** Timestamp, kind, author, then whatever the kind adds. Same shape every time. */
-function eventBlock(entry: ThreadEvent): string {
+function eventHead(entry: ThreadEvent): string {
   const { event } = entry;
   const head = [`### ${event.createdAt}`, event.kind, `by ${handleOf(entry.actor)}`];
   const detail = eventDetail(entry);
-  const line = detail ? `${head.join(' · ')} · ${detail}` : head.join(' · ');
-  return event.body ? `${line}\n${event.body}` : line;
+  return detail ? `${head.join(' · ')} · ${detail}` : head.join(' · ');
 }
 
 function eventDetail(entry: ThreadEvent): string | null {
@@ -341,21 +421,32 @@ function footerNotes(
       notes.push(`[${droppedFiles} more ${droppedFiles === 1 ? 'file' : 'files'} not shown]`);
     }
   } else if (view.files.length > 0) {
-    notes.push(
-      `[diff not shown: ${diffstat(view.totals)}, ~${formatBytes(estimateStoredDiff(view))} — pass --diff]`,
-    );
+    notes.push(diffNotShown(view));
   }
 
   return notes;
 }
 
 /**
- * A floor, not a measurement: without the patches loaded the only evidence is
- * the line counts, so this says "at least this much" rather than guessing.
+ * What `--diff` would add, as far as a view without the patches can establish.
+ *
+ * Which is less than it looks. A diffless view carries file summaries, so
+ * whether a hunk is stored at all is knowable only for the files sync marked
+ * `patchTruncated`, and the size of one that is stored is not knowable here at
+ * all. This used to quote `(additions + deletions) * 40`, which advertised
+ * 392 KB for a thread whose `--diff` emits 2 KB of "[no diff hunk recorded]",
+ * and 193 B for one that emits 3 KB. A number that wrong is worse than none: it
+ * is read as a measurement, and it contradicts `chyme activity`, which sizes the
+ * stored patches in the query and is accurate.
  */
-function estimateStoredDiff(view: ThreadView): number {
-  return view.files.reduce(
-    (sum, file) => sum + (file.additions + file.deletions) * 40 + byteLength(file.path) + 64,
-    0,
-  );
+function diffNotShown(view: ThreadView): string {
+  const stat = diffstat(view.totals);
+  const hunkless = view.files.filter((file) => file.patchTruncated).length;
+
+  if (hunkless === view.files.length) {
+    return `[diff not shown: ${stat} — no hunks stored, --diff would add file headers only]`;
+  }
+
+  const missing = hunkless > 0 ? `, ${plural(hunkless, 'file')} with no stored hunk` : '';
+  return `[diff not shown: ${stat}${missing} — pass --diff; size not known here, chyme activity reports it]`;
 }

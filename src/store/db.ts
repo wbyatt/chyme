@@ -57,9 +57,13 @@ export function openDatabase(path: string, options: OpenOptions = {}): Db {
     db.exec('PRAGMA synchronous = NORMAL');
   }
   db.exec('PRAGMA foreign_keys = ON');
-  // Without this, deletes performed by a foreign key cascade do not fire the
-  // triggers that tidy up the search index and the polymorphic reference edges,
-  // and removing a source silently leaves both behind.
+  // Belt and braces for trigger cascades. An earlier comment here claimed the
+  // search index and reference edges would rot without it; that was tested and
+  // is false on SQLite 3.51 — the cleanup triggers fire either way, because a
+  // foreign-key cascade counts as a top-level delete rather than a recursive
+  // one. It is kept because it makes the depth of trigger nesting explicit
+  // rather than dependent on a compile-time default, but nothing here relies
+  // on it.
   db.exec('PRAGMA recursive_triggers = ON');
 
   return db;
@@ -83,8 +87,11 @@ export function transaction<T>(db: Db, fn: () => T): T {
       db.exec(`RELEASE ${name}`);
       return result;
     } catch (error) {
-      db.exec(`ROLLBACK TO ${name}`);
-      db.exec(`RELEASE ${name}`);
+      // The original failure is the one worth reporting. If unwinding also
+      // fails, letting that replace it would hide the cause behind its own
+      // side effect.
+      unwind(db, `ROLLBACK TO ${name}`);
+      unwind(db, `RELEASE ${name}`);
       throw error;
     } finally {
       savepointDepth--;
@@ -97,7 +104,17 @@ export function transaction<T>(db: Db, fn: () => T): T {
     db.exec('COMMIT');
     return result;
   } catch (error) {
-    db.exec('ROLLBACK');
+    unwind(db, 'ROLLBACK');
     throw error;
+  }
+}
+
+/** Best-effort unwind on the error path; never masks the error being thrown. */
+function unwind(db: Db, statement: string): void {
+  try {
+    db.exec(statement);
+  } catch {
+    // Nothing useful to do: we are already unwinding, and the caller is about
+    // to see the failure that got us here.
   }
 }

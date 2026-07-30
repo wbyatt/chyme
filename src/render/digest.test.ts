@@ -33,6 +33,48 @@ describe('renderDigestList', () => {
     const text = renderDigestList(fixture.project, [], { now: NOW });
     expect(text).toContain('`--since last` has nothing to measure from');
   });
+
+  it('counts the digests rather than pluralising the word "saved"', () => {
+    fixture.addDigest('2026-07-06T00:00:00Z', '2026-07-13T00:00:00Z');
+    fixture.addDigest('2026-07-13T00:00:00Z', '2026-07-20T00:00:00Z');
+
+    const text = renderDigestList(
+      fixture.project,
+      fixture.store.digests.listDigests(fixture.project.id),
+      { now: NOW },
+    );
+
+    expect(text).toContain('— 2 saved');
+    expect(text).not.toContain('saveds');
+  });
+
+  it('says how many exist when it was handed a page of them', () => {
+    for (let week = 0; week < 5; week += 1) {
+      fixture.addDigest(`2026-06-0${week + 1}T00:00:00Z`, `2026-06-0${week + 2}T00:00:00Z`);
+    }
+    const page = fixture.store.digests.listDigests(fixture.project.id, 2);
+
+    const text = renderDigestList(fixture.project, page, { now: NOW, total: 5 });
+
+    // The page's own length is not the answer to "how many digests are there",
+    // and a heading that says "2 saved" over the newest 2 of 5 is not short —
+    // it is wrong.
+    expect(text).toContain('# platform digests — 2 of 5 saved');
+    expect(text).toContain('[3 older digests not listed — raise --limit]');
+  });
+
+  it('keeps the two reasons for a short list apart', () => {
+    for (let day = 1; day <= 6; day += 1) {
+      fixture.addDigest(`2026-06-0${day}T00:00:00Z`, `2026-06-0${day + 1}T00:00:00Z`);
+    }
+    const page = fixture.store.digests.listDigests(fixture.project.id, 4);
+
+    const text = renderDigestList(fixture.project, page, { now: NOW, total: 6, maxBytes: 320 });
+
+    expect(byteLength(text)).toBeLessThanOrEqual(320);
+    expect(text).toMatch(/\[\d+ of 4 listed digests not shown — raise the byte budget\]/);
+    expect(text).toContain('[2 older digests not listed — raise --limit]');
+  });
 });
 
 describe('renderDigest', () => {

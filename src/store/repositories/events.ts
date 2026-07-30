@@ -96,6 +96,38 @@ export function upsertEvent(
   return upsertEvents(db, threadId, sourceId, [event])[0]!;
 }
 
+/**
+ * Drop events the source no longer reports, returning how many went.
+ *
+ * `fetchThreadDetail` returns a thread's *complete* event list, so an event
+ * absent from it was deleted upstream. Leaving it behind made the store disagree
+ * with itself: `chyme thread` showed a comment that `chyme search` could not
+ * find, because the search index is rebuilt from the fetched set on every sync
+ * while the event table only ever grew.
+ *
+ * The doomed rows are worked out in JS rather than with `external_id NOT IN
+ * (…)`, so a thread with more events than SQLite's bound-parameter ceiling still
+ * prunes correctly instead of failing the whole sync.
+ */
+export function pruneEvents(
+  db: Db,
+  threadId: number,
+  keepExternalIds: readonly string[],
+): number {
+  const keep = new Set(keepExternalIds);
+  const doomed = db
+    .prepare('SELECT id, external_id FROM event WHERE thread_id = ?')
+    .all(threadId)
+    .filter((row) => !keep.has(text(row, 'external_id')))
+    .map((row) => int(row, 'id'));
+
+  if (doomed.length === 0) return 0;
+
+  const statement = db.prepare('DELETE FROM event WHERE id = ?');
+  for (const id of doomed) statement.run(id);
+  return doomed.length;
+}
+
 export function listEventsForThread(db: Db, threadId: number): EventRow[] {
   return db
     .prepare(`SELECT ${COLUMNS} FROM event WHERE thread_id = ? ORDER BY created_at, id`)

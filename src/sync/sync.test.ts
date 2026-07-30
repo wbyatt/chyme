@@ -16,9 +16,12 @@ import { queryActivity } from '../query/activity.js';
 import { resolveWindow } from '../query/window.js';
 import { renderActivity } from '../render/activity.js';
 import { openStore, type Store } from '../store/index.js';
-import { syncProject, type DriverResolver } from './sync.js';
+import { ChymeError } from '../util/errors.js';
+import { syncFailed, syncProject, type DriverResolver } from './sync.js';
 
-const SYNC = syncConfigSchema.parse({});
+// Most tests want the unbounded behaviour so their fixed 2026 timestamps are
+// not silently filtered by the first-sync window; that window has its own test.
+const SYNC = syncConfigSchema.parse({ firstSyncSince: null });
 
 function detail(overrides: Partial<ThreadDetail> & { number: number }): ThreadDetail {
   const number = overrides.number;
@@ -76,6 +79,10 @@ class FakeDriver implements SourceDriver {
   readonly listCalls: (string | null)[] = [];
   private readonly threads = new Map<string, ThreadDetail>();
   failWith: Error | null = null;
+  /** Thread keys (`kind#number`) whose detail fetch throws deterministically. */
+  readonly failDetail = new Set<string>();
+  /** Thread kinds whose listing throws. */
+  readonly failListKinds = new Set<string>();
 
   constructor(id = 'fake') {
     this.id = id;
@@ -98,6 +105,9 @@ class FakeDriver implements SourceDriver {
     options: ListThreadsOptions,
   ): AsyncIterable<ThreadSummary> {
     if (this.failWith) throw this.failWith;
+    for (const kind of options.kinds) {
+      if (this.failListKinds.has(kind)) throw new Error(`${kind} listing is down`);
+    }
     this.listCalls.push(options.since);
 
     const matching = [...this.threads.values()]
@@ -120,9 +130,16 @@ class FakeDriver implements SourceDriver {
   ): Promise<ThreadDetail> {
     const key = `${ref.kind}#${ref.number}`;
     this.detailFetches.push(key);
+    if (this.failDetail.has(key)) throw new Error(`${key} cannot be read`);
     const thread = this.threads.get(key);
     if (!thread) throw new Error(`fake driver has no ${key}`);
-    return options.includePatches ? thread : { ...thread, files: [] };
+    if (options.includePatches) return thread;
+    // Matching the real driver: not asking for hunks strips the patch text, it
+    // does not claim the change touched no files.
+    return {
+      ...thread,
+      files: thread.files.map((entry) => ({ ...entry, patch: null, patchTruncated: false })),
+    };
   }
 
   extractReferences(text: string): ExtractedReference[] {
@@ -230,7 +247,7 @@ describe('syncProject', () => {
       driver.put(detail({ number, updatedAt: `2026-07-1${number}T00:00:00Z` }));
     }
     const config = projectConfig([{ driver: 'fake', key: 'acme/api' }]);
-    const limited = syncConfigSchema.parse({ maxThreadsPerRun: 1 });
+    const limited = syncConfigSchema.parse({ maxThreadsPerRun: 1, firstSyncSince: null });
 
     const first = await syncProject(store, config, resolve, limited);
     expect(first.sources[0]).toMatchObject({ threadsWritten: 1, hitRunLimit: true });
@@ -263,7 +280,7 @@ describe('syncProject', () => {
       store,
       projectConfig([{ driver: 'fake', key: 'acme/api' }], ['pull_request', 'issue']),
       resolve,
-      syncConfigSchema.parse({ maxThreadsPerRun: 1 }),
+      syncConfigSchema.parse({ maxThreadsPerRun: 1, firstSyncSince: null }),
     );
 
     expect(report.sources[0]).toMatchObject({ threadsWritten: 2, hitRunLimit: true });
@@ -420,5 +437,218 @@ describe('syncProject', () => {
     // full run ignores both and re-reads it.
     expect(driver.listCalls).toEqual([null, '2026-07-10T00:00:00Z', null]);
     expect(driver.detailFetches).toEqual(['pull_request#1', 'pull_request#1']);
+  });
+
+  it('resumes a full sync that hit the run limit instead of restarting it', async () => {
+    // A full sync bypasses the unchanged check, so if it also restarted from the
+    // beginning every run it would re-read the same first N threads forever and
+    // never reach the tail — while the report told the user to run it again.
+    for (const number of [1, 2, 3, 4]) {
+      driver.put(detail({ number, updatedAt: `2026-07-1${number}T00:00:00Z` }));
+    }
+    const config = projectConfig([{ driver: 'fake', key: 'acme/api' }]);
+    const limited = syncConfigSchema.parse({ maxThreadsPerRun: 2, firstSyncSince: null });
+
+    // The property is convergence: repeating the command must finish the job.
+    // Previously every run restarted from the beginning and this never
+    // terminated, while the report kept saying "run sync again to continue".
+    let runs = 0;
+    let hitLimit = true;
+    while (hitLimit && runs < 10) {
+      const report = await syncProject(store, config, resolve, limited, { full: true });
+      hitLimit = report.sources[0]?.hitRunLimit ?? false;
+      runs += 1;
+    }
+
+    expect(runs).toBeLessThan(10);
+    const source = store.sources.listSources(store.projects.requireProject('platform').id)[0]!;
+    expect(store.threads.listThreadsForSource(source.id).map((t) => t.number).sort()).toEqual([
+      1, 2, 3, 4,
+    ]);
+  });
+
+  it('steps past a thread it cannot read, and says which one', async () => {
+    for (const number of [1, 2, 3]) {
+      driver.put(detail({ number, updatedAt: `2026-07-1${number}T00:00:00Z` }));
+    }
+    driver.failDetail.add('pull_request#2');
+    const config = projectConfig([{ driver: 'fake', key: 'acme/api' }]);
+
+    const first = await syncProject(store, config, resolve, SYNC);
+    expect(first.sources[0]?.threadsWritten).toBe(2);
+    expect(first.sources[0]?.failedThreads).toMatchObject([
+      { number: 2, updatedAt: '2026-07-12T00:00:00Z' },
+    ]);
+
+    // Without stepping past it, #3 would be unreachable on every future run.
+    const source = store.sources.listSources(store.projects.requireProject('platform').id)[0]!;
+    expect(store.threads.findThread(source.id, 'pull_request', 3)).not.toBeNull();
+  });
+
+  it('keeps syncing one thread kind when another kind fails', async () => {
+    driver.put(detail({ number: 1 }));
+    driver.failListKinds.add('issue');
+
+    const report = await syncProject(
+      store,
+      projectConfig([{ driver: 'fake', key: 'acme/api' }], ['issue', 'pull_request']),
+      resolve,
+      SYNC,
+    );
+
+    expect(report.sources[0]?.error).toContain('issue');
+    // The per-kind cursors exist so one kind cannot hold up another.
+    expect(report.sources[0]?.threadsWritten).toBe(1);
+  });
+
+  it('clears file changes a thread no longer has', async () => {
+    driver.put(detail({ number: 1, files: [file('src/a.ts', '@@ -1 +1 @@')] }));
+    const config = projectConfig([{ driver: 'fake', key: 'acme/api' }]);
+    await syncProject(store, config, resolve, SYNC);
+
+    // A force-push reduces the branch to nothing; the old rows must not survive
+    // as phantom changes that --path still matches.
+    driver.put(detail({ number: 1, updatedAt: '2026-07-11T00:00:00Z', files: [] }));
+    await syncProject(store, config, resolve, SYNC);
+
+    const source = store.sources.listSources(store.projects.requireProject('platform').id)[0]!;
+    const thread = store.threads.findThread(source.id, 'pull_request', 1)!;
+    expect(store.fileChanges.listFileChanges(thread.id)).toHaveLength(0);
+  });
+
+  it('keeps stored hunks when a later sync is not asking for them', async () => {
+    const withPatches = syncConfigSchema.parse({ firstSyncSince: null });
+    const withoutPatches = syncConfigSchema.parse({
+      firstSyncSince: null,
+      includePatches: false,
+    });
+    const config = projectConfig([{ driver: 'fake', key: 'acme/api' }]);
+
+    driver.put(detail({ number: 1, files: [file('src/a.ts', '@@ -1 +1 @@')] }));
+    await syncProject(store, config, resolve, withPatches);
+
+    // Turning includePatches off should stop fetching diffs, not delete the ones
+    // already fetched — and must never claim nothing was withheld.
+    driver.put(detail({ number: 1, updatedAt: '2026-07-11T00:00:00Z', files: [file('src/a.ts', '@@ -1 +1 @@')] }));
+    await syncProject(store, config, resolve, withoutPatches);
+
+    const source = store.sources.listSources(store.projects.requireProject('platform').id)[0]!;
+    const thread = store.threads.findThread(source.id, 'pull_request', 1)!;
+    expect(store.fileChanges.listFileChanges(thread.id)[0]?.patch).toBe('@@ -1 +1 @@');
+  });
+
+  it('drops events and their references when the source stops reporting them', async () => {
+    driver.put(
+      detail({
+        number: 1,
+        events: [comment('c1', '2026-07-09T00:00:00Z', 'zebracake, and see #34')],
+      }),
+    );
+    const config = projectConfig([{ driver: 'fake', key: 'acme/api' }]);
+    await syncProject(store, config, resolve, SYNC);
+    expect(store.search.search({ text: 'zebracake' })).toHaveLength(1);
+
+    driver.put(detail({ number: 1, updatedAt: '2026-07-11T00:00:00Z', events: [] }));
+    await syncProject(store, config, resolve, SYNC);
+
+    const source = store.sources.listSources(store.projects.requireProject('platform').id)[0]!;
+    const thread = store.threads.findThread(source.id, 'pull_request', 1)!;
+    // `thread` and `search` must not disagree about what the thread contains.
+    expect(store.events.listEventsForThread(thread.id)).toHaveLength(0);
+    expect(store.search.search({ text: 'zebracake' })).toHaveLength(0);
+  });
+
+  it('takes back references from a comment edited down to nothing', async () => {
+    driver.put(
+      detail({ number: 1, events: [comment('c1', '2026-07-09T00:00:00Z', 'see also #34')] }),
+    );
+    const config = projectConfig([{ driver: 'fake', key: 'acme/api' }]);
+    await syncProject(store, config, resolve, SYNC);
+
+    const source = store.sources.listSources(store.projects.requireProject('platform').id)[0]!;
+    const thread = store.threads.findThread(source.id, 'pull_request', 1)!;
+    const event = store.events.listEventsForThread(thread.id)[0]!;
+    expect(store.references.listReferencesFrom({ kind: 'event', id: event.id })).toHaveLength(1);
+
+    driver.put(
+      detail({
+        number: 1,
+        updatedAt: '2026-07-11T00:00:00Z',
+        events: [{ ...comment('c1', '2026-07-09T00:00:00Z', ''), body: null }],
+      }),
+    );
+    await syncProject(store, config, resolve, SYNC);
+
+    expect(store.references.listReferencesFrom({ kind: 'event', id: event.id })).toHaveLength(0);
+  });
+
+  it('bounds a first sync to a recent window and reports the bound', async () => {
+    driver.put(detail({ number: 1, updatedAt: '2026-07-10T00:00:00Z' }));
+    driver.put(detail({ number: 2, updatedAt: '2020-01-01T00:00:00Z' }));
+
+    const report = await syncProject(
+      store,
+      projectConfig([{ driver: 'fake', key: 'acme/api' }]),
+      resolve,
+      syncConfigSchema.parse({ firstSyncSince: '90d' }),
+      { now: () => new Date('2026-07-20T00:00:00Z') },
+    );
+
+    expect(driver.listCalls[0]).toBe('2026-04-21T00:00:00Z');
+    expect(report.sources[0]?.firstSyncFrom).toBe('2026-04-21T00:00:00Z');
+    expect(report.sources[0]?.threadsWritten).toBe(1);
+  });
+
+  it('reads further back when explicitly asked', async () => {
+    driver.put(detail({ number: 2, updatedAt: '2020-01-01T00:00:00Z' }));
+
+    await syncProject(
+      store,
+      projectConfig([{ driver: 'fake', key: 'acme/api' }]),
+      resolve,
+      syncConfigSchema.parse({ firstSyncSince: '90d' }),
+      { now: () => new Date('2026-07-20T00:00:00Z'), since: '2019-01-01T00:00:00Z' },
+    );
+
+    const source = store.sources.listSources(store.projects.requireProject('platform').id)[0]!;
+    expect(store.threads.findThread(source.id, 'pull_request', 2)).not.toBeNull();
+  });
+
+  it('stops the whole run when interrupted, rather than failing every source', async () => {
+    const controller = new AbortController();
+    const aborting = new FakeDriver('aborting');
+    aborting.failWith = Object.assign(new Error('This operation was aborted'), {
+      name: 'AbortError',
+    });
+
+    const report = await syncProject(
+      store,
+      projectConfig([
+        { driver: 'aborting', key: 'acme/api' },
+        { driver: 'aborting', key: 'acme/worker' },
+      ]),
+      () => aborting,
+      SYNC,
+      { signal: controller.signal },
+    );
+
+    // Someone who pressed Ctrl-C must not be told two repositories failed.
+    expect(report.aborted).toBe(true);
+    expect(report.sources).toHaveLength(0);
+    expect(syncFailed(report)).toBe(false);
+  });
+
+  it('keeps a failure hint rather than reducing it to a bare message', async () => {
+    const broken = new FakeDriver('broken');
+    broken.failWith = new ChymeError('Rate limit exhausted.', 'The limit resets in 43m.');
+
+    const report = await syncProject(
+      store,
+      projectConfig([{ driver: 'broken', key: 'acme/api' }]),
+      () => broken,
+      SYNC,
+    );
+
+    expect(report.sources[0]?.error).toContain('resets in 43m');
   });
 });
