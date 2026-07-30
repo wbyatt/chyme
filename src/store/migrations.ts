@@ -18,7 +18,7 @@ export interface Migration {
 /**
  * Timestamps are ISO 8601 UTC strings, not epoch integers: they sort
  * lexicographically, they read correctly in a `sqlite3` shell, and they are
- * exactly what the forges hand us, so nothing has to be converted twice.
+ * exactly what the sources hand us, so nothing has to be converted twice.
  *
  * `raw_json` holds the driver's untouched payload. It is the reason a schema
  * change later does not mean re-fetching a year of history through a

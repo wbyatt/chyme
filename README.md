@@ -81,13 +81,15 @@ chyme activity --since last
 chyme activity --since 7d --author kai
 chyme activity --since 2026-07-01 --repo acme/api --path src/billing
 
-# Open one thread in full
-chyme thread platform/acme/api#412 --diff --comments
+# Open one thread in full (quote the ref — `#` starts a comment in most shells)
+chyme thread 'platform/acme/api#412' --diff
+chyme thread '#412' --no-commits --max-bytes 8000
 
 # Topical search across the corpus
 chyme search "migration tooling" --since 30d
 
-# Digests you've saved
+# Save a composed digest, which becomes the new baseline for `--since last`
+chyme digest save --since 7d < digest.md
 chyme digest list
 chyme digest show 7
 ```
@@ -96,17 +98,29 @@ chyme digest show 7
 
 `chyme activity` returns a compact index with stable thread references and size hints; `chyme thread` expands one. That progressive disclosure is deliberate: it lets an agent plan what to open rather than pulling a week of diffs into its context on the first call.
 
+Every read command takes `--max-bytes`, and every renderer marks what it withheld rather than quietly shortening — `[7 of 23 events not shown]`, `[diff not shown: ~46 KB — pass --diff]`. A silently truncated diff reads as a complete one, and a digest built on it is confidently wrong.
+
+Only `sync` needs a token. The read commands work against the local store with no credentials configured at all.
+
 ## Use from an agentic harness
 
 `skill/SKILL.md` is a ready-to-use skill for Claude Code and other harnesses that read skill definitions. Point your harness at it and ask for a digest in the ordinary way — the skill teaches it to sync at runtime, page through activity, and expand selectively within a byte budget.
 
 ## Extending to other sources
 
-Sources sit behind a `ForgeDriver` interface (`src/drivers/types.ts`) with a deliberately small surface: list threads updated since a watermark, fetch one thread in full, extract references from text. GitHub is the only implementation today. Nothing outside `src/drivers/github/` knows what GitHub is, and the reference graph is stored in a forge-agnostic edge table, so an unresolvable `PROJ-88` still records that a thread points at a ticket — and becomes resolvable the day a Jira driver exists.
+Sources sit behind a `SourceDriver` interface (`src/drivers/types.ts`) with a deliberately small surface: list threads updated since a watermark, fetch one thread in full, extract references from text.
+
+**The abstraction is pitched at a thread of discourse, not at a pull request.** Git forges are the only sources implemented today, but nothing in the domain, the store, the query layer, or the renderers knows what a repository is. A Jira ticket with its comment history, a Slack thread, or a Notion document with its revisions are all the same shape: something with participants, a timeline of events, and a state that changes.
+
+Concretely, that means the vocabularies are **open**. `ThreadKind`, `ThreadState`, and `EventKind` each have a set of known values and accept any other string, so a ticket driver contributes `ticket` / `in_progress` / `status_note` without editing a single shared file — and every layer carries unfamiliar values through rather than dropping them. Drivers declare the kinds they can service (`chyme drivers` prints them), so a kind a driver does not support is refused when you configure it, not partway through a sync. There is a test that syncs, queries, and renders a non-git source using none of git's vocabulary.
+
+The reference graph is stored in a source-agnostic edge table, so an unresolvable `PROJ-88` still records that a thread points at a ticket — and becomes resolvable the day a ticket driver exists.
+
+Git-shaped facets degrade rather than obstruct: a thread's file changes are simply empty for a source that has none.
 
 ## Status
 
-Early. The store, the GitHub driver, sync, query, and the CLI are implemented; expect the CLI surface to move. Read-only by design: Chyme never writes to your forges.
+Early. The store, the GitHub driver, sync, query, and the CLI are implemented; expect the CLI surface to move. Read-only by design: Chyme never writes to your sources.
 
 ## Development
 

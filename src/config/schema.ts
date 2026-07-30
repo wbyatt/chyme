@@ -14,9 +14,15 @@ export const sourceConfigSchema = z.object({
   driver: z.string().min(1),
   /** Driver-interpreted source key, e.g. 'owner/repo'. */
   key: z.string().min(1),
-  /** Which thread kinds to pull. Discussions are opt-in; most repos don't use them. */
+  /**
+   * Which thread kinds to pull. An open vocabulary, validated against the
+   * driver rather than a fixed enum here — a Jira driver's `ticket` is as
+   * legitimate a kind as a forge's `pull_request`, and this file has no business
+   * knowing the difference. `chyme source add` checks the kinds against the
+   * named driver, and sync refuses a kind the driver cannot service.
+   */
   kinds: z
-    .array(z.enum(['pull_request', 'issue', 'discussion']))
+    .array(z.string().min(1))
     .nonempty()
     .default(['pull_request', 'issue']),
 });

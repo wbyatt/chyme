@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import type { ForgeActor } from '../../domain/types.js';
+import type { SourceActor } from '../../domain/types.js';
 import { openStore, type Store } from '../index.js';
 import type { ThreadInput } from './threads.js';
 
-const ADA: ForgeActor = {
+const ADA: SourceActor = {
   externalId: 'U_ada',
   handle: 'ada',
   displayName: 'Ada Lovelace',
@@ -101,7 +101,7 @@ describe('upsertThread', () => {
 
     expect(second.authorId).toBe(first.authorId);
     expect(store.actors.listActors(sourceId)).toHaveLength(1);
-    // Renames follow the forge id, so history does not split when someone
+    // Renames follow the source id, so history does not split when someone
     // changes their handle.
     expect(store.actors.getActor(first.authorId!)?.handle).toBe('ada-renamed');
   });

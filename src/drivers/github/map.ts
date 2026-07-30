@@ -1,10 +1,10 @@
 import type {
   FileChangeStatus,
-  ForgeActor,
-  ForgeEvent,
-  ForgeFileChange,
-  ForgeThreadDetail,
-  ForgeThreadSummary,
+  SourceActor,
+  SourceEvent,
+  FileChange,
+  ThreadDetail,
+  ThreadSummary,
   ThreadState,
 } from '../../domain/types.js';
 import type {
@@ -77,7 +77,7 @@ export function isBot(payload: GitHubActor): boolean {
  * and the domain says so too rather than standing in a "ghost" placeholder that
  * a reader would take for a real participant.
  */
-export function mapActor(payload: GitHubActor | null | undefined): ForgeActor | null {
+export function mapActor(payload: GitHubActor | null | undefined): SourceActor | null {
   if (!payload) return null;
   return {
     // `id` should always be present, but a login is a stable enough surrogate
@@ -98,7 +98,7 @@ function pullRequestState(state: GitHubPullRequestSummary['state']): ThreadState
   return state === 'CLOSED' ? 'closed' : 'open';
 }
 
-export function mapPullRequestSummary(node: GitHubPullRequestSummary): ForgeThreadSummary {
+export function mapPullRequestSummary(node: GitHubPullRequestSummary): ThreadSummary {
   return {
     externalId: node.id,
     kind: 'pull_request',
@@ -117,7 +117,7 @@ export function mapPullRequestSummary(node: GitHubPullRequestSummary): ForgeThre
   };
 }
 
-export function mapIssueSummary(node: GitHubIssueSummary): ForgeThreadSummary {
+export function mapIssueSummary(node: GitHubIssueSummary): ThreadSummary {
   return {
     externalId: node.id,
     kind: 'issue',
@@ -137,7 +137,7 @@ export function mapIssueSummary(node: GitHubIssueSummary): ForgeThreadSummary {
   };
 }
 
-function commentEvent(node: GitHubIssueComment): ForgeEvent {
+function commentEvent(node: GitHubIssueComment): SourceEvent {
   return {
     externalId: node.id,
     kind: 'comment',
@@ -151,7 +151,7 @@ function commentEvent(node: GitHubIssueComment): ForgeEvent {
   };
 }
 
-function reviewCommentEvent(node: GitHubReviewComment, reviewId: string): ForgeEvent {
+function reviewCommentEvent(node: GitHubReviewComment, reviewId: string): SourceEvent {
   return {
     externalId: node.id,
     kind: 'review_comment',
@@ -175,9 +175,9 @@ function reviewCommentEvent(node: GitHubReviewComment, reviewId: string): ForgeE
   };
 }
 
-function reviewEvents(entry: GitHubReviewWithComments): ForgeEvent[] {
+function reviewEvents(entry: GitHubReviewWithComments): SourceEvent[] {
   const { review } = entry;
-  const events: ForgeEvent[] = [
+  const events: SourceEvent[] = [
     {
       externalId: review.id,
       kind: 'review',
@@ -198,7 +198,7 @@ function reviewEvents(entry: GitHubReviewWithComments): ForgeEvent[] {
   return events;
 }
 
-function commitEvent(node: GitHubPullRequestCommit): ForgeEvent {
+function commitEvent(node: GitHubPullRequestCommit): SourceEvent {
   const { commit } = node;
   return {
     externalId: node.id,
@@ -234,10 +234,10 @@ function commitEvent(node: GitHubPullRequestCommit): ForgeEvent {
  * Labels are still captured on the thread itself, so current state is known
  * even though its history is not.
  */
-function stateChangeEvents(summary: ForgeThreadSummary, mergedBy: ForgeActor | null): ForgeEvent[] {
+function stateChangeEvents(summary: ThreadSummary, mergedBy: SourceActor | null): SourceEvent[] {
   // Synthesised ids: these events have no node of their own on GitHub, so the
   // key is derived from the thread. Deterministic, which is all upsert needs.
-  const events: ForgeEvent[] = [
+  const events: SourceEvent[] = [
     {
       externalId: `${summary.externalId}:opened`,
       kind: 'state_change',
@@ -287,7 +287,7 @@ function stateChangeEvents(summary: ForgeThreadSummary, mergedBy: ForgeActor | n
  * Chronological, with a stable tiebreak so two syncs of an unchanged thread
  * produce byte-identical output.
  */
-function sortEvents(events: ForgeEvent[]): ForgeEvent[] {
+function sortEvents(events: SourceEvent[]): SourceEvent[] {
   return events.sort((left, right) => {
     const delta = Date.parse(left.createdAt) - Date.parse(right.createdAt);
     if (delta !== 0) return delta;
@@ -315,12 +315,12 @@ export interface PullRequestFileInput {
  * a row that says plainly that its patch is missing. A file we know nothing
  * about is a hole in the digest; a file marked `patchTruncated` is a fact.
  */
-export function mapFileChanges(input: PullRequestFileInput): ForgeFileChange[] {
+export function mapFileChanges(input: PullRequestFileInput): FileChange[] {
   const { files, patches, maxPatchBytes } = input;
   const byPath = new Map<string, GitHubRestFile>();
   for (const file of patches ?? []) byPath.set(file.filename, file);
 
-  const changes: ForgeFileChange[] = files.map((file) => {
+  const changes: FileChange[] = files.map((file) => {
     const rest = byPath.get(file.path);
     byPath.delete(file.path);
     return {
@@ -355,7 +355,7 @@ function resolvePatch(
   rest: GitHubRestFile | undefined,
   patchesRequested: boolean,
   maxPatchBytes: number,
-): Pick<ForgeFileChange, 'patch' | 'patchTruncated'> {
+): Pick<FileChange, 'patch' | 'patchTruncated'> {
   // A discourse-only sync never asked for hunks, so nothing was withheld and
   // nothing was truncated. `patchTruncated` means "there is a patch you are not
   // seeing", and claiming that here would send readers looking for it.
@@ -383,9 +383,9 @@ export interface PullRequestDetailInput {
   files: PullRequestFileInput;
 }
 
-export function mapPullRequestDetail(input: PullRequestDetailInput): ForgeThreadDetail {
+export function mapPullRequestDetail(input: PullRequestDetailInput): ThreadDetail {
   const summary = mapPullRequestSummary(input.node);
-  const events: ForgeEvent[] = [
+  const events: SourceEvent[] = [
     ...stateChangeEvents(summary, mapActor(input.node.mergedBy)),
     ...input.comments.map(commentEvent),
     ...input.reviews.flatMap(reviewEvents),
@@ -405,9 +405,9 @@ export interface IssueDetailInput {
   comments: readonly GitHubIssueComment[];
 }
 
-export function mapIssueDetail(input: IssueDetailInput): ForgeThreadDetail {
+export function mapIssueDetail(input: IssueDetailInput): ThreadDetail {
   const summary = mapIssueSummary(input.node);
-  const events: ForgeEvent[] = [
+  const events: SourceEvent[] = [
     ...stateChangeEvents(summary, null),
     ...input.comments.map(commentEvent),
   ];

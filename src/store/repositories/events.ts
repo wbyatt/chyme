@@ -1,4 +1,4 @@
-import type { EventKind, ForgeEvent } from '../../domain/types.js';
+import type { EventKind, SourceEvent } from '../../domain/types.js';
 import { decodeJson, encodeJson, int, intOrNull, text, textOrNull, type Row } from '../columns.js';
 import type { Db } from '../db.js';
 import { upsertActorId } from './actors.js';
@@ -54,14 +54,14 @@ const UPSERT = `INSERT INTO event (
  *
  * Bodies are overwritten rather than versioned: an edited comment reads as the
  * comment now says, which is what a reader catching up would see. Keeping the
- * pre-edit text would need the forge to tell us it changed, and none of them do
+ * pre-edit text would need the source to tell us it changed, and none of them do
  * reliably.
  */
 export function upsertEvents(
   db: Db,
   threadId: number,
   sourceId: number,
-  events: readonly ForgeEvent[],
+  events: readonly SourceEvent[],
 ): EventRow[] {
   if (events.length === 0) return [];
 
@@ -91,7 +91,7 @@ export function upsertEvent(
   db: Db,
   threadId: number,
   sourceId: number,
-  event: ForgeEvent,
+  event: SourceEvent,
 ): EventRow {
   return upsertEvents(db, threadId, sourceId, [event])[0]!;
 }

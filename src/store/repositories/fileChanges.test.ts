@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import type { ForgeFileChange } from '../../domain/types.js';
+import type { FileChange } from '../../domain/types.js';
 import { openStore, type Store } from '../index.js';
 
-function file(path: string, overrides: Partial<ForgeFileChange> = {}): ForgeFileChange {
+function file(path: string, overrides: Partial<FileChange> = {}): FileChange {
   return {
     path,
     previousPath: null,

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { ConfigError } from '../../util/errors.js';
-import type { DriverFactory, ForgeDriver } from '../types.js';
+import type { DriverFactory, SourceDriver } from '../types.js';
 import { GitHubClient } from './client.js';
 import { GitHubDriver } from './driver.js';
 import { parseSourceKey } from './source-key.js';
@@ -9,7 +9,7 @@ import { parseSourceKey } from './source-key.js';
  * The only door into this directory.
  *
  * Everything else under `github/` — queries, payload shapes, rate-limit
- * headers, the word "GraphQL" — stays behind the ForgeDriver interface. What
+ * headers, the word "GraphQL" — stays behind the SourceDriver interface. What
  * leaves is a factory and a driver id, which is exactly as much as the rest of
  * Chyme is allowed to know about GitHub.
  */
@@ -24,9 +24,14 @@ const HINT =
 export const githubDriverFactory: DriverFactory = {
   id: 'github',
 
+  // Discussions are deliberately absent: the driver raises NotImplementedError
+  // for them, and listing them here would trade a clear config-time rejection
+  // for a failure partway through a sync.
+  supportedKinds: ['pull_request', 'issue'],
+
   parseSourceKey,
 
-  create(credentials: Record<string, unknown> | undefined): ForgeDriver {
+  create(credentials: Record<string, unknown> | undefined): SourceDriver {
     if (credentials === undefined) {
       throw new ConfigError('No GitHub credentials are configured.', HINT);
     }

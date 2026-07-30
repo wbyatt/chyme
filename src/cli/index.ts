@@ -3,8 +3,13 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Command } from 'commander';
+import { registerActivityCommand } from './commands/activity.js';
+import { registerDigestCommands } from './commands/digest.js';
 import { registerProjectCommands } from './commands/project.js';
+import { registerSearchCommand } from './commands/search.js';
 import { registerSourceCommands } from './commands/source.js';
+import { registerSyncCommand } from './commands/sync.js';
+import { registerThreadCommand } from './commands/thread.js';
 import { reportError } from './output.js';
 
 /**
@@ -36,6 +41,11 @@ program
 
 registerProjectCommands(program);
 registerSourceCommands(program);
+registerSyncCommand(program);
+registerActivityCommand(program);
+registerThreadCommand(program);
+registerSearchCommand(program);
+registerDigestCommands(program);
 
 try {
   await program.parseAsync(process.argv);

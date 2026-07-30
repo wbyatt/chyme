@@ -26,7 +26,7 @@ export class ConfigError extends ChymeError {
   override readonly name = 'ConfigError';
 }
 
-/** A source forge rejected us, rate-limited us, or returned something unusable. */
+/** A source rejected us, rate-limited us, or returned something unusable. */
 export class DriverError extends ChymeError {
   override readonly name = 'DriverError';
 

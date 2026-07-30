@@ -1,11 +1,11 @@
 import type {
   ExtractedReference,
-  ForgeThreadDetail,
-  ForgeThreadSummary,
+  ThreadDetail,
+  ThreadSummary,
   SourceRef,
   ThreadRef,
 } from '../../domain/types.js';
-import type { FetchDetailOptions, ForgeDriver, ListThreadsOptions } from '../types.js';
+import type { FetchDetailOptions, SourceDriver, ListThreadsOptions } from '../types.js';
 import { DriverError, NotImplementedError } from '../../util/errors.js';
 import type { GitHubClient } from './client.js';
 import { mapIssueDetail, mapIssueSummary, mapPullRequestDetail, mapPullRequestSummary } from './map.js';
@@ -94,7 +94,7 @@ async function drain<T>(
   return nodes;
 }
 
-export class GitHubDriver implements ForgeDriver {
+export class GitHubDriver implements SourceDriver {
   readonly id = DRIVER_ID;
   readonly #client: GitHubClient;
 
@@ -130,7 +130,7 @@ export class GitHubDriver implements ForgeDriver {
   async *listThreadsUpdatedSince(
     source: SourceRef,
     opts: ListThreadsOptions,
-  ): AsyncIterable<ForgeThreadSummary> {
+  ): AsyncIterable<ThreadSummary> {
     const repo = splitSourceKey(source.key);
     const kinds = new Set(opts.kinds);
 
@@ -145,7 +145,7 @@ export class GitHubDriver implements ForgeDriver {
       throw new DriverError(`Unreadable watermark "${opts.since}".`, DRIVER_ID);
     }
 
-    const window: ForgeThreadSummary[] = [];
+    const window: ThreadSummary[] = [];
     if (kinds.has('pull_request')) {
       window.push(
         ...(await this.#listWindow(
@@ -212,10 +212,10 @@ export class GitHubDriver implements ForgeDriver {
     since: number | null,
     what: string,
     fetchPage: (after: string | null) => Promise<GraphQlConnection<TNode>>,
-    map: (node: TNode) => ForgeThreadSummary,
+    map: (node: TNode) => ThreadSummary,
     signal?: AbortSignal,
-  ): Promise<ForgeThreadSummary[]> {
-    const collected: ForgeThreadSummary[] = [];
+  ): Promise<ThreadSummary[]> {
+    const collected: ThreadSummary[] = [];
     let after: string | null = null;
 
     for (let visited = 0; visited < MAX_PAGES; visited += 1) {
@@ -246,7 +246,7 @@ export class GitHubDriver implements ForgeDriver {
     source: SourceRef,
     ref: ThreadRef,
     opts: FetchDetailOptions,
-  ): Promise<ForgeThreadDetail> {
+  ): Promise<ThreadDetail> {
     const repo = splitSourceKey(source.key);
     if (ref.kind === 'discussion') {
       throw new NotImplementedError('GitHub Discussions');
@@ -260,7 +260,7 @@ export class GitHubDriver implements ForgeDriver {
     repo: GitHubRepo,
     number: number,
     opts: FetchDetailOptions,
-  ): Promise<ForgeThreadDetail> {
+  ): Promise<ThreadDetail> {
     const scope = { owner: repo.owner, name: repo.name, number };
     const response = await this.#client.graphql<PullRequestDetailResponse>(
       Q.PULL_REQUEST_DETAIL,
@@ -405,7 +405,7 @@ export class GitHubDriver implements ForgeDriver {
     repo: GitHubRepo,
     number: number,
     opts: FetchDetailOptions,
-  ): Promise<ForgeThreadDetail> {
+  ): Promise<ThreadDetail> {
     const scope = { owner: repo.owner, name: repo.name, number };
     const response = await this.#client.graphql<IssueDetailResponse>(
       Q.ISSUE_DETAIL,

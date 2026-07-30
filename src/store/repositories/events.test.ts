@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import type { ForgeEvent } from '../../domain/types.js';
+import type { SourceEvent } from '../../domain/types.js';
 import { openStore, type Store } from '../index.js';
 
-function event(overrides: Partial<ForgeEvent> = {}): ForgeEvent {
+function event(overrides: Partial<SourceEvent> = {}): SourceEvent {
   return {
     externalId: 'IC_1',
     kind: 'comment',

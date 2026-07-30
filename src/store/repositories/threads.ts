@@ -1,4 +1,4 @@
-import type { ForgeThreadSummary, ThreadKind, ThreadState } from '../../domain/types.js';
+import type { ThreadSummary, ThreadKind, ThreadState } from '../../domain/types.js';
 import {
   bool,
   decodeJsonArray,
@@ -30,12 +30,12 @@ export interface ThreadRow {
   closedAt: string | null;
   mergedAt: string | null;
   labels: string[];
-  /** When Chyme first recorded this thread — not when the forge created it. */
+  /** When Chyme first recorded this thread — not when the source created it. */
   firstSeenAt: string;
   lastSyncedAt: string;
 }
 
-export interface ThreadInput extends ForgeThreadSummary {
+export interface ThreadInput extends ThreadSummary {
   /**
    * Omit on a listing-pass upsert and the stored body is left alone; pass
    * `null` explicitly to record that the description was cleared. The

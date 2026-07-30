@@ -1,7 +1,8 @@
 import type { Command } from 'commander';
 import { loadConfig, saveConfig } from '../../config/load.js';
-import { THREAD_KINDS, type ThreadKind } from '../../domain/types.js';
+import type { ThreadKind } from '../../domain/types.js';
 import { driverIds, findDriverFactory } from '../../drivers/registry.js';
+import type { DriverFactory } from '../../drivers/types.js';
 import { ChymeError, NotFoundError } from '../../util/errors.js';
 import { selectProject } from '../context.js';
 import { emit, note, runCommand } from '../output.js';
@@ -9,9 +10,15 @@ import { emit, note, runCommand } from '../output.js';
 /** The config schema requires at least one kind, so the tuple shape is load-bearing. */
 type Kinds = [ThreadKind, ...ThreadKind[]];
 
-const DEFAULT_KINDS: Kinds = ['pull_request', 'issue'];
+function defaultKindsFor(factory: DriverFactory): Kinds {
+  const [first, ...rest] = factory.supportedKinds;
+  if (first === undefined) {
+    throw new ChymeError(`The ${factory.id} driver declares no thread kinds it can sync.`);
+  }
+  return [first, ...rest];
+}
 
-function parseKinds(input: string | undefined): Kinds | null {
+function parseKinds(input: string | undefined, factory: DriverFactory): Kinds | null {
   if (input === undefined) return null;
 
   const kinds = input
@@ -19,11 +26,14 @@ function parseKinds(input: string | undefined): Kinds | null {
     .map((kind) => kind.trim())
     .filter((kind) => kind.length > 0);
 
-  const unknown = kinds.filter((kind) => !THREAD_KINDS.includes(kind as ThreadKind));
-  if (unknown.length > 0) {
+  // Checked against this specific driver, which is stricter and more useful than
+  // a global list: it catches both a typo and a kind the driver knows of but
+  // cannot yet service, at config time rather than partway through a sync.
+  const unsupported = kinds.filter((kind) => !factory.supportedKinds.includes(kind));
+  if (unsupported.length > 0) {
     throw new ChymeError(
-      `Unknown thread ${unknown.length === 1 ? 'kind' : 'kinds'}: ${unknown.join(', ')}`,
-      `Known kinds: ${THREAD_KINDS.join(', ')}`,
+      `The ${factory.id} driver cannot sync ${unsupported.join(', ')}.`,
+      `It supports: ${factory.supportedKinds.join(', ')}`,
     );
   }
   const [first, ...rest] = kinds as ThreadKind[];
@@ -40,8 +50,8 @@ export function registerSourceCommands(program: Command): void {
     .command('add')
     .argument('<key>', 'source identifier, e.g. owner/repo or a GitHub URL')
     .option('-p, --project <slug>', 'project to add it to')
-    .option('-d, --driver <driver>', 'forge driver', 'github')
-    .option('--kinds <kinds>', 'comma-separated: pull_request,issue,discussion')
+    .option('-d, --driver <driver>', 'source driver', 'github')
+    .option('--kinds <kinds>', 'comma-separated thread kinds; see `chyme drivers` for what each supports')
     .description('Add a source to a project')
     .action((key: string, options: { project?: string; driver: string; kinds?: string }) =>
       runCommand(() => {
@@ -63,11 +73,13 @@ export function registerSourceCommands(program: Command): void {
           );
         }
 
-        const kinds = parseKinds(options.kinds);
+        const kinds = parseKinds(options.kinds, factory);
         project.sources.push({
           driver: options.driver,
           key: normalized,
-          kinds: kinds ?? DEFAULT_KINDS,
+          // Fall back to everything the driver offers rather than a hardcoded
+          // pair, so a non-git source gets a sensible default too.
+          kinds: kinds ?? defaultKindsFor(factory),
         });
 
         saveConfig(config, path);
@@ -101,7 +113,7 @@ export function registerSourceCommands(program: Command): void {
     .command('remove')
     .argument('<key>')
     .option('-p, --project <slug>')
-    .option('-d, --driver <driver>', 'forge driver', 'github')
+    .option('-d, --driver <driver>', 'source driver', 'github')
     .description('Remove a source; its synced threads are dropped on the next sync')
     .action((key: string, options: { project?: string; driver: string }) =>
       runCommand(() => {
@@ -130,6 +142,12 @@ export function registerSourceCommands(program: Command): void {
 
   program
     .command('drivers')
-    .description('List available source drivers')
-    .action(() => runCommand(() => { for (const id of driverIds()) emit(id); }));
+    .description('List available source drivers and the thread kinds each supports')
+    .action(() =>
+      runCommand(() => {
+        for (const id of driverIds()) {
+          emit(`${id}\t${findDriverFactory(id).supportedKinds.join(',')}`);
+        }
+      }),
+    );
 }

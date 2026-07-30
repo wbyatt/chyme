@@ -1,7 +1,7 @@
 import type {
   ExtractedReference,
-  ForgeThreadDetail,
-  ForgeThreadSummary,
+  ThreadDetail,
+  ThreadSummary,
   SourceRef,
   ThreadKind,
   ThreadRef,
@@ -32,10 +32,10 @@ export interface FetchDetailOptions {
 
 /**
  * The whole of what Chyme needs from a source. Keeping this surface small is
- * what makes a second forge cheap: everything provider-specific — auth,
+ * what makes a second source type cheap: everything provider-specific — auth,
  * pagination, query languages, reference syntax — lives behind these methods.
  */
-export interface ForgeDriver {
+export interface SourceDriver {
   /** Stable id used in config and in the store, e.g. 'github'. */
   readonly id: string;
 
@@ -57,19 +57,19 @@ export interface ForgeDriver {
   listThreadsUpdatedSince(
     source: SourceRef,
     opts: ListThreadsOptions,
-  ): AsyncIterable<ForgeThreadSummary>;
+  ): AsyncIterable<ThreadSummary>;
 
   /** Everything said and done inside one thread. */
   fetchThreadDetail(
     source: SourceRef,
     ref: ThreadRef,
     opts: FetchDetailOptions,
-  ): Promise<ForgeThreadDetail>;
+  ): Promise<ThreadDetail>;
 
   /**
-   * Find references in free text. Reference syntax is forge-specific ("#4412",
+   * Find references in free text. Reference syntax is source-specific ("#4412",
    * "owner/repo#12", a bare sha), so parsing belongs to the driver even though
-   * the resulting edges are stored in a forge-agnostic table.
+   * the resulting edges are stored in a source-agnostic table.
    */
   extractReferences(text: string): ExtractedReference[];
 }
@@ -81,7 +81,19 @@ export interface ForgeDriver {
  */
 export interface DriverFactory {
   readonly id: string;
-  create(credentials: Record<string, unknown> | undefined): ForgeDriver;
+
+  /**
+   * The thread kinds this driver can actually service today.
+   *
+   * Declared rather than assumed, because `ThreadKind` is an open vocabulary: a
+   * ticket tracker would offer `'ticket'`, a chat source `'channel_thread'`, and
+   * neither would offer `'pull_request'`. It also keeps us honest about kinds a
+   * driver knows of but has not implemented — those are left out here, so the
+   * config is rejected with an explanation instead of failing mid-sync.
+   */
+  readonly supportedKinds: readonly ThreadKind[];
+
+  create(credentials: Record<string, unknown> | undefined): SourceDriver;
 
   /**
    * Validate and normalize a source key without building a driver.

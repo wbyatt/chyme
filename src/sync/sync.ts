@@ -1,6 +1,6 @@
 import type { ProjectConfig, SyncConfig } from '../config/schema.js';
 import type { SourceRef, ThreadKind } from '../domain/types.js';
-import type { ForgeDriver } from '../drivers/types.js';
+import type { SourceDriver } from '../drivers/types.js';
 import type { ProjectRow, SourceRow, Store } from '../store/index.js';
 import { toIso } from '../util/time.js';
 import { reconcileProject } from './reconcile.js';
@@ -9,10 +9,10 @@ import { reconcileProject } from './reconcile.js';
  * Pull everything that has moved in a project's sources into the store.
  *
  * The engine takes a driver *resolver* rather than a registry so it depends
- * only on the ForgeDriver interface — which is also what makes it testable
+ * only on the SourceDriver interface — which is also what makes it testable
  * against a fake driver with no network.
  */
-export type DriverResolver = (driverId: string) => ForgeDriver;
+export type DriverResolver = (driverId: string) => SourceDriver;
 
 /**
  * One watermark per source per thread kind. Splitting them lets issues and pull
@@ -182,7 +182,11 @@ async function syncSource(
           ref,
           { kind: threadKind, number: summary.number },
           {
-            includePatches: syncConfig.includePatches && threadKind === 'pull_request',
+            // Whether a kind even *has* change artifacts is the driver's
+            // business, not the engine's. This used to read `&& threadKind ===
+            // 'pull_request'`, which put git vocabulary in source-neutral code
+            // and would have been wrong for the first non-git source.
+            includePatches: syncConfig.includePatches,
             maxPatchBytes: syncConfig.maxPatchBytes,
             ...(options.signal ? { signal: options.signal } : {}),
           },

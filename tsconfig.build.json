@@ -1,4 +1,6 @@
 {
   "extends": "./tsconfig.json",
-  "exclude": ["node_modules", "dist", "**/*.test.ts"]
+  // src/testing holds fixture builders used only by tests; shipping them in
+  // dist/ would be dead code in the published package.
+  "exclude": ["node_modules", "dist", "**/*.test.ts", "src/testing/**"]
 }

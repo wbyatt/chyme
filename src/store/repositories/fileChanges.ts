@@ -1,4 +1,4 @@
-import type { FileChangeStatus, ForgeFileChange } from '../../domain/types.js';
+import type { FileChangeStatus, FileChange } from '../../domain/types.js';
 import { bool, fromBool, int, text, textOrNull, type Row } from '../columns.js';
 import { transaction, type Db } from '../db.js';
 
@@ -16,7 +16,7 @@ export interface FileChangeSummary {
   additions: number;
   deletions: number;
   /**
-   * The forge withheld the patch or it was over budget. Never let a missing
+   * The source withheld the patch or it was over budget. Never let a missing
    * patch read as an empty one — "no diff" and "we did not fetch the diff" are
    * opposite conclusions.
    */
@@ -75,7 +75,7 @@ const UPSERT = `INSERT INTO file_change (
 export function replaceFileChanges(
   db: Db,
   threadId: number,
-  files: readonly ForgeFileChange[],
+  files: readonly FileChange[],
 ): FileChangeRow[] {
   return transaction(db, () => {
     const upsert = db.prepare(UPSERT);

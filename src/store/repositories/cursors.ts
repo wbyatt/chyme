@@ -10,7 +10,7 @@ import type { Db } from '../db.js';
  * independently. A single cursor per source would mean a failed issue page
  * rewinding a successful pull request sync.
  *
- * `value` is a string, not a timestamp, for the same reason: most forges give
+ * `value` is a string, not a timestamp, for the same reason: most sources give
  * an ISO instant, but an opaque continuation token is just as valid a
  * watermark and only the driver needs to interpret it.
  */

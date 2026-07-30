@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { ForgeEvent } from '../../domain/types.js';
+import type { SourceEvent } from '../../domain/types.js';
 import {
   isBot,
   mapActor,
@@ -145,7 +145,7 @@ const FILE: GitHubChangedFile = {
   changeType: 'MODIFIED',
 };
 
-function eventsOfKind(events: ForgeEvent[], kind: ForgeEvent['kind']): ForgeEvent[] {
+function eventsOfKind(events: SourceEvent[], kind: SourceEvent['kind']): SourceEvent[] {
   return events.filter((event) => event.kind === kind);
 }
 

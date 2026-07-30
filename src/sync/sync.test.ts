@@ -3,21 +3,24 @@ import type { ProjectConfig } from '../config/schema.js';
 import { syncConfigSchema } from '../config/schema.js';
 import type {
   ExtractedReference,
-  ForgeEvent,
-  ForgeFileChange,
-  ForgeThreadDetail,
-  ForgeThreadSummary,
+  SourceEvent,
+  FileChange,
+  ThreadDetail,
+  ThreadSummary,
   SourceRef,
   ThreadKind,
   ThreadRef,
 } from '../domain/types.js';
-import type { ForgeDriver, ListThreadsOptions } from '../drivers/types.js';
+import type { SourceDriver, ListThreadsOptions } from '../drivers/types.js';
+import { queryActivity } from '../query/activity.js';
+import { resolveWindow } from '../query/window.js';
+import { renderActivity } from '../render/activity.js';
 import { openStore, type Store } from '../store/index.js';
 import { syncProject, type DriverResolver } from './sync.js';
 
 const SYNC = syncConfigSchema.parse({});
 
-function detail(overrides: Partial<ForgeThreadDetail> & { number: number }): ForgeThreadDetail {
+function detail(overrides: Partial<ThreadDetail> & { number: number }): ThreadDetail {
   const number = overrides.number;
   return {
     externalId: `PR_${number}`,
@@ -40,7 +43,7 @@ function detail(overrides: Partial<ForgeThreadDetail> & { number: number }): For
   };
 }
 
-function comment(id: string, createdAt: string, body: string): ForgeEvent {
+function comment(id: string, createdAt: string, body: string): SourceEvent {
   return {
     externalId: id,
     kind: 'comment',
@@ -54,7 +57,7 @@ function comment(id: string, createdAt: string, body: string): ForgeEvent {
   };
 }
 
-function file(path: string, patch: string | null, truncated = false): ForgeFileChange {
+function file(path: string, patch: string | null, truncated = false): FileChange {
   return {
     path,
     previousPath: null,
@@ -67,18 +70,18 @@ function file(path: string, patch: string | null, truncated = false): ForgeFileC
 }
 
 /** Records what was asked of it so tests can assert on API traffic, not just results. */
-class FakeDriver implements ForgeDriver {
+class FakeDriver implements SourceDriver {
   readonly id: string;
   readonly detailFetches: string[] = [];
   readonly listCalls: (string | null)[] = [];
-  private readonly threads = new Map<string, ForgeThreadDetail>();
+  private readonly threads = new Map<string, ThreadDetail>();
   failWith: Error | null = null;
 
   constructor(id = 'fake') {
     this.id = id;
   }
 
-  put(thread: ForgeThreadDetail): void {
+  put(thread: ThreadDetail): void {
     this.threads.set(`${thread.kind}#${thread.number}`, thread);
   }
 
@@ -93,7 +96,7 @@ class FakeDriver implements ForgeDriver {
   async *listThreadsUpdatedSince(
     _source: SourceRef,
     options: ListThreadsOptions,
-  ): AsyncIterable<ForgeThreadSummary> {
+  ): AsyncIterable<ThreadSummary> {
     if (this.failWith) throw this.failWith;
     this.listCalls.push(options.since);
 
@@ -114,7 +117,7 @@ class FakeDriver implements ForgeDriver {
     _source: SourceRef,
     ref: ThreadRef,
     options: { includePatches: boolean },
-  ): Promise<ForgeThreadDetail> {
+  ): Promise<ThreadDetail> {
     const key = `${ref.kind}#${ref.number}`;
     this.detailFetches.push(key);
     const thread = this.threads.get(key);
@@ -267,11 +270,78 @@ describe('syncProject', () => {
     expect(driver.detailFetches).toEqual(['pull_request#1', 'issue#90']);
   });
 
+  it('carries a non-git source through sync and query using its own vocabulary', async () => {
+    // The proof that the driver abstraction sits at "a thread of discourse" and
+    // not at "a pull request". Nothing here is a kind, state, or event type that
+    // any git forge emits, and no layer needs to be taught about them.
+    const tracker = new FakeDriver('tracker');
+    tracker.put(
+      detail({
+        number: 88,
+        kind: 'ticket',
+        externalId: 'PROJ-88',
+        state: 'in_progress',
+        title: 'Latency spike in checkout',
+        body: 'Started right after the cache change',
+        url: 'https://tracker.test/PROJ-88',
+        updatedAt: '2026-07-15T00:00:00Z',
+        files: [],
+        events: [
+          {
+            externalId: 'n1',
+            kind: 'status_note',
+            actor: { externalId: 'U9', handle: 'ren', displayName: 'Ren', isBot: false },
+            createdAt: '2026-07-15T00:00:00Z',
+            body: 'Moved to In Progress; suspect the cache change',
+            path: null,
+            line: null,
+            detail: { from: 'triage', to: 'in_progress' },
+            raw: {},
+          },
+        ],
+      }),
+    );
+
+    const report = await syncProject(
+      store,
+      projectConfig([{ driver: 'tracker', key: 'PROJ' }], ['ticket']),
+      () => tracker,
+      SYNC,
+      { now: () => new Date('2026-07-20T00:00:00Z') },
+    );
+    expect(report.sources[0]).toMatchObject({ threadsWritten: 1, eventsWritten: 1, error: null });
+
+    const project = store.projects.requireProject('platform');
+    const source = store.sources.listSources(project.id)[0]!;
+
+    const thread = store.threads.findThread(source.id, 'ticket', 88)!;
+    expect(thread.state).toBe('in_progress');
+    expect(store.events.listEventsForThread(thread.id)[0]?.kind).toBe('status_note');
+    expect(store.cursors.getCursorValue(source.id, 'updated_at:ticket')).toBe(
+      '2026-07-15T00:00:00Z',
+    );
+
+    const window = resolveWindow(store, project.id, {
+      since: { kind: 'instant', at: '2026-07-01T00:00:00Z' },
+      now: new Date('2026-07-20T00:00:00Z'),
+    });
+    const activity = queryActivity(store, project, window);
+    expect(activity.threads).toHaveLength(1);
+    expect(activity.threads[0]?.thread.kind).toBe('ticket');
+
+    // The unknown event kind must survive rendering rather than being dropped
+    // for not appearing in a hardcoded list.
+    const rendered = renderActivity(activity, { now: new Date('2026-07-20T00:00:00Z') });
+    expect(rendered).toContain('ticket');
+    expect(rendered).toContain('status note');
+    expect(rendered).toContain('Latency spike in checkout');
+  });
+
   it('reports a failing source without abandoning the others', async () => {
     const healthy = new FakeDriver('healthy');
     healthy.put(detail({ number: 7 }));
     const broken = new FakeDriver('broken');
-    broken.failWith = new Error('403 from the forge');
+    broken.failWith = new Error('403 from the source');
 
     const report = await syncProject(
       store,

@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { ForgeEvent, ForgeThreadDetail } from '../domain/types.js';
+import type { SourceEvent, ThreadDetail } from '../domain/types.js';
 import { openStore, type Store } from './index.js';
 import { LATEST_VERSION } from './migrations.js';
 
@@ -21,7 +21,7 @@ afterEach(() => {
   }
 });
 
-const DETAIL: ForgeThreadDetail = {
+const DETAIL: ThreadDetail = {
   externalId: 'PR_1',
   kind: 'pull_request',
   number: 42,
@@ -48,7 +48,7 @@ const DETAIL: ForgeThreadDetail = {
       line: null,
       detail: null,
       raw: {},
-    } satisfies ForgeEvent,
+    } satisfies SourceEvent,
   ],
   files: [
     {

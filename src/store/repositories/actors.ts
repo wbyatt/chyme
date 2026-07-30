@@ -1,11 +1,11 @@
-import type { ForgeActor } from '../../domain/types.js';
+import type { SourceActor } from '../../domain/types.js';
 import { bool, fromBool, int, text, textOrNull, type Row } from '../columns.js';
 import type { Db } from '../db.js';
 
 /**
  * Actors are scoped to a source, not to a project. The same human on two
- * forges is two rows, and merging them is an identity problem this layer has no
- * evidence to solve — a handle collision across forges is a coincidence, not a
+ * sources is two rows, and merging them is an identity problem this layer has no
+ * evidence to solve — a handle collision across sources is a coincidence, not a
  * person.
  */
 export interface ActorRow {
@@ -31,11 +31,11 @@ function toActor(row: Row): ActorRow {
 const COLUMNS = 'id, source_id, external_id, handle, display_name, is_bot';
 
 /**
- * Idempotent on (source, external_id) — the forge's own id, not the handle,
+ * Idempotent on (source, external_id) — the source's own id, not the handle,
  * because people rename themselves and a digest that loses their history when
  * they do is broken.
  */
-export function upsertActor(db: Db, sourceId: number, actor: ForgeActor): ActorRow {
+export function upsertActor(db: Db, sourceId: number, actor: SourceActor): ActorRow {
   const row = db
     .prepare(
       `INSERT INTO actor (source_id, external_id, handle, display_name, is_bot)
@@ -51,7 +51,7 @@ export function upsertActor(db: Db, sourceId: number, actor: ForgeActor): ActorR
 }
 
 /** Convenience for the write paths, which mostly need the id and tolerate null. */
-export function upsertActorId(db: Db, sourceId: number, actor: ForgeActor | null): number | null {
+export function upsertActorId(db: Db, sourceId: number, actor: SourceActor | null): number | null {
   return actor ? upsertActor(db, sourceId, actor).id : null;
 }
 

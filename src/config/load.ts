@@ -47,19 +47,36 @@ function interpolate(value: unknown, path: string[], missing: Set<string>): unkn
   return value;
 }
 
-function interpolateCredentials(config: ChymeConfig): ChymeConfig {
+/**
+ * Resolve one driver's credentials, interpolating `${ENV_VAR}` as late as
+ * possible.
+ *
+ * Lateness is the point. Only the sync path needs a token; activity, thread,
+ * search and digest read the local store and must keep working with no
+ * credentials configured at all — including on a machine that never had them.
+ * Interpolating at load time made every read command fail without a token.
+ */
+export function credentialsFor(
+  config: ChymeConfig,
+  driverId: string,
+): Record<string, unknown> | undefined {
+  const raw = config.credentials[driverId];
+  if (raw === undefined) return undefined;
+
   const missing = new Set<string>();
-  const credentials = interpolate(config.credentials, ['credentials'], missing) as ChymeConfig['credentials'];
+  const resolved = interpolate(raw, ['credentials', driverId], missing) as Record<string, unknown>;
 
   if (missing.size > 0) {
     const names = [...missing].sort();
     throw new ConfigError(
-      `Config references unset environment ${names.length === 1 ? 'variable' : 'variables'}: ${names.join(', ')}`,
+      `credentials.${driverId} references unset environment ${
+        names.length === 1 ? 'variable' : 'variables'
+      }: ${names.join(', ')}`,
       `Export ${names.length === 1 ? 'it' : 'them'}, or replace the \${...} placeholder in the config with a literal value.`,
     );
   }
 
-  return { ...config, credentials };
+  return resolved;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): LoadedConfig {
@@ -113,7 +130,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): LoadedConfig {
     }
   }
 
-  return { config: interpolateCredentials(result.data), path, exists: true };
+  return { config: result.data, path, exists: true };
 }
 
 /**
