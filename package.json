@@ -15,11 +15,11 @@
     "node": ">=24.0.0"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "chyme": "node --experimental-strip-types src/cli/index.ts"
+    "chyme": "npm run build --silent && node dist/cli/index.js"
   },
   "dependencies": {
     "@octokit/graphql": "^8.1.1",

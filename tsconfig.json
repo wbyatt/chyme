@@ -17,6 +17,10 @@
     "forceConsistentCasingInFileNames": true,
     "types": ["node"]
   },
+  // Tests are included here on purpose: excluding them from the typecheck means
+  // a test can drift from the code it covers and still appear to pass, because
+  // vitest strips types without checking them. tsconfig.build.json drops them
+  // again so they stay out of dist/.
   "include": ["src/**/*.ts"],
-  "exclude": ["node_modules", "dist", "**/*.test.ts"]
+  "exclude": ["node_modules", "dist"]
 }

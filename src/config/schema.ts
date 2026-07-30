@@ -35,9 +35,10 @@ export const syncConfigSchema = z.object({
   /** Per-file patch cap in bytes. Oversized patches are recorded as truncated, never as empty. */
   maxPatchBytes: z.number().int().positive().default(65_536),
   /**
-   * Hard ceiling on threads fetched in a single sync run. A safety valve for a
-   * first sync against a busy repo, not a normal-operation limit; when it trips
-   * the run reports how many threads it left behind.
+   * Ceiling on threads fetched per source, per thread kind, in one sync run.
+   * A safety valve for a first sync against a busy repository, not a
+   * normal-operation limit. When it trips, the run says so and the watermark is
+   * still accurate, so simply syncing again continues from where it stopped.
    */
   maxThreadsPerRun: z.number().int().positive().default(500),
 });

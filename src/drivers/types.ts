@@ -82,4 +82,13 @@ export interface ForgeDriver {
 export interface DriverFactory {
   readonly id: string;
   create(credentials: Record<string, unknown> | undefined): ForgeDriver;
+
+  /**
+   * Validate and normalize a source key without building a driver.
+   *
+   * Deciding whether "owner/repo" is well-formed needs no credentials, and
+   * requiring them would mean you could not write down which repositories you
+   * follow before you had a token — exactly backwards for a config file.
+   */
+  parseSourceKey(input: string): string;
 }
