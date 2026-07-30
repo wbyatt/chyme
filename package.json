@@ -1,0 +1,35 @@
+{
+  "name": "chyme",
+  "version": "0.1.0",
+  "description": "A project digest tool: an insider's view into an engineering project you need to follow but aren't committing to.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "chyme": "./dist/cli/index.js"
+  },
+  "files": [
+    "dist",
+    "skill"
+  ],
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "chyme": "node --experimental-strip-types src/cli/index.ts"
+  },
+  "dependencies": {
+    "@octokit/graphql": "^8.1.1",
+    "@octokit/request": "^9.1.3",
+    "commander": "^12.1.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

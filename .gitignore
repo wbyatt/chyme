@@ -1,0 +1,18 @@
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Local state and secrets. Chyme's real config lives in ~/.config/chyme/,
+# but never let a stray local copy get committed.
+*.db
+*.db-wal
+*.db-shm
+config.json
+config.local.json
+.env
+.env.*
+
+# Editors / OS
+.DS_Store
+.idea/
+*.swp
